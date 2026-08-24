@@ -4,12 +4,19 @@
 // New windows split whichever leaf they land near along its longer axis,
 // which is what produces the dwindle/fibonacci-style spiral.
 
-// Below this, splitting a leaf would hand at least one side a tile smaller
-// than most apps' actual minimum size, so insert() prefers a roomier leaf
-// instead when one exists (matters most for the 5th+ window in a deep
-// spiral, where the most-recently-split corner runs out of space first
-// while the rest of the tree still has plenty of room).
-const MIN_SPLIT_PX = 200;
+// Hard backstop: a leaf can never be shrunk below this, regardless of what
+// SHRINK_LIMIT_FRACTION below would otherwise allow -- keeps a resize (or a
+// fresh split via insert()) from decaying a window toward nothing over many
+// successive steps, and it's what governs a brand-new leaf that has no
+// established size of its own yet to take a percentage of.
+const MIN_SPLIT_PX = 380;
+
+// A single split or resize can never take more than this fraction away from
+// a leaf's own last known size in one shot -- keeps the limit proportional
+// to what a given window actually has right now instead of one global pixel
+// number with no relation to it (a small terminal and a maximized editor
+// get shrunk by the same fraction, not toward the same absolute floor).
+const SHRINK_LIMIT_FRACTION = 0.5;
 
 class BspNode {
     constructor({ window = null, orientation = null, ratio = 0.5, children = null, parent = null } = {}) {
@@ -29,7 +36,6 @@ export class BspTree {
     constructor() {
         this.root = null;
         this._leaves = new Map(); // Meta.Window -> BspNode
-        this._minSizes = new Map(); // Meta.Window -> {width, height}, learned from actual applied resizes
     }
 
     get isEmpty() {
@@ -68,34 +74,6 @@ export class BspTree {
         this._leaves.set(window, newLeaf);
     }
 
-    // Records a window's real minimum size, learned by the caller comparing
-    // a requested move_resize_frame() against what actually landed once the
-    // resize settled. Tracks each dimension's max independently -- a later
-    // observation with a taller-but-narrower reading (e.g. a stale width
-    // sample) must not overwrite a previously-confirmed wider dimension.
-    // Returns false (and stores nothing) if this isn't new information, so
-    // callers can tell "already knew that" apart from "just learned
-    // something" without keeping their own shadow copy.
-    learnMinSize(window, size) {
-        const prev = this._minSizes.get(window);
-        const width = prev ? Math.max(prev.width, size.width) : size.width;
-        const height = prev ? Math.max(prev.height, size.height) : size.height;
-        if (prev && width === prev.width && height === prev.height) return false;
-        this._minSizes.set(window, { width, height });
-        return true;
-    }
-
-    minSizeOf(window) {
-        return this._minSizes.get(window) || null;
-    }
-
-    // Only for a window that's actually gone (unmanaged) -- an internal
-    // remove()+insert() done to re-home a window still keeps its learned
-    // size, since that's the whole reason to re-home it.
-    forgetMinSize(window) {
-        this._minSizes.delete(window);
-    }
-
     remove(window) {
         const leaf = this._leaves.get(window);
         if (!leaf) return;
@@ -124,21 +102,64 @@ export class BspTree {
     }
 
     // True if splitting this leaf along its longer axis would leave both
-    // resulting sides at or above the relevant floor. That floor is the
-    // window's own learned minimum (along whichever axis the split actually
-    // divides) when we have one, else the generic MIN_SPLIT_PX guess. No
-    // layout info yet (very first insert into a leaf that's never been
-    // through computeRects) always allows the split -- there's nothing
-    // better to fall back to.
+    // resulting sides at or above its floor (floorPxFor). No layout info
+    // yet (very first insert into a leaf that's never been through
+    // computeRects) always allows the split -- there's nothing better to
+    // fall back to.
     _canSplit(node) {
         const rect = node.lastRect;
         if (!rect) return true;
         const splitsWidth = rect.width >= rect.height; // mirrors insert()'s orientation choice
+        const orientation = splitsWidth ? 'row' : 'col';
         const long = splitsWidth ? rect.width : rect.height;
-        const learned = node.window ? this._minSizes.get(node.window) : null;
-        const learnedAlongAxis = learned ? (splitsWidth ? learned.width : learned.height) : 0;
-        const floor = Math.max(learnedAlongAxis, MIN_SPLIT_PX);
-        return long >= 2 * floor;
+        return long >= 2 * this.floorPxFor(node, orientation);
+    }
+
+    // Pixel floor a resize/split must respect on one side of a split, along
+    // `orientation` ('row' = width, 'col' = height).
+    //
+    // For a leaf: SHRINK_LIMIT_FRACTION of its own last known extent along
+    // that axis, floored by the MIN_SPLIT_PX backstop -- so the limit scales
+    // with what THIS window actually has, not a single generic number every
+    // window is measured against. A leaf with no established size yet
+    // (freshly created by insert(), not yet through a computeRects pass)
+    // has nothing to take a percentage of, so it just uses the backstop.
+    //
+    // `side` may instead be a whole subtree, in which case recurse rather
+    // than treating it as a single unit, since a subtree's real floor is
+    // whatever its own children need: if it splits along the same axis
+    // we're measuring, its children's floors stack (each needs its own
+    // share of that dimension); if it splits the other axis, its children
+    // instead share the full extent along this axis (both span it fully, so
+    // whichever needs more sets the subtree's floor).
+    //
+    // Shared by _canSplit (does insert() dare split this leaf at all),
+    // hasCapacity(), and the extension's resize paths (border-drag and the
+    // resize keybindings), so none of them can push a window below what a
+    // split elsewhere in the tree already committed to respecting.
+    floorPxFor(side, orientation) {
+        if (side.isLeaf) {
+            const rect = side.lastRect;
+            if (!rect) return MIN_SPLIT_PX;
+            const extent = orientation === 'row' ? rect.width : rect.height;
+            return Math.max(extent * (1 - SHRINK_LIMIT_FRACTION), MIN_SPLIT_PX);
+        }
+        const [a, b] = side.children;
+        const floorA = this.floorPxFor(a, orientation);
+        const floorB = this.floorPxFor(b, orientation);
+        return side.orientation === orientation ? floorA + floorB : Math.max(floorA, floorB);
+    }
+
+    // True if at least one leaf could still accept a compliant split --
+    // i.e. whether this tree has room for one more tiled window at all.
+    // Empty tree trivially has room (insert() just sets the root, no split
+    // needed).
+    hasCapacity() {
+        if (this.root === null) return true;
+        for (const leaf of this._leaves.values()) {
+            if (this._canSplit(leaf)) return true;
+        }
+        return false;
     }
 
     _largestLeaf() {
@@ -211,14 +232,41 @@ export class BspTree {
             return;
         }
         const [a, b] = node.children;
-        if (node.orientation === 'row') {
-            const aw = Math.round(rect.width * node.ratio);
-            this._compute(a, { x: rect.x, y: rect.y, width: aw, height: rect.height }, result);
-            this._compute(b, { x: rect.x + aw, y: rect.y, width: rect.width - aw, height: rect.height }, result);
+        const isRow = node.orientation === 'row';
+        const available = isRow ? rect.width : rect.height;
+
+        // Enforce both children's recursive pixel floor (floorPxFor) right
+        // here, for every split, not just the one a user happens to be
+        // dragging -- ratio is "desired" intent, this is what reconciles it
+        // against what the subtree on each side can actually support. A
+        // split several levels up the tree can therefore never starve a
+        // deeply nested subtree below what ITS OWN windows need, without
+        // each resize call site having to know or care how deep that
+        // subtree goes.
+        const floorA = this.floorPxFor(a, node.orientation);
+        const floorB = this.floorPxFor(b, node.orientation);
+
+        let aExtent;
+        if (floorA + floorB <= available) {
+            const desired = Math.round(available * node.ratio);
+            aExtent = Math.min(available - floorB, Math.max(floorA, desired));
         } else {
-            const ah = Math.round(rect.height * node.ratio);
-            this._compute(a, { x: rect.x, y: rect.y, width: rect.width, height: ah }, result);
-            this._compute(b, { x: rect.x, y: rect.y + ah, width: rect.width, height: rect.height - ah }, result);
+            // The container itself is too small to honor both floors at once
+            // (e.g. the monitor shrank, or a gap/panel change ate into the
+            // work area) -- hasCapacity() is meant to keep insert() out of
+            // this state, but an external resize can still land here after
+            // the fact. No split satisfies both floors, so hand out what's
+            // left proportional to each side's own floor rather than
+            // picking an arbitrary winner.
+            aExtent = Math.round(available * (floorA / (floorA + floorB)));
+        }
+
+        if (isRow) {
+            this._compute(a, { x: rect.x, y: rect.y, width: aExtent, height: rect.height }, result);
+            this._compute(b, { x: rect.x + aExtent, y: rect.y, width: rect.width - aExtent, height: rect.height }, result);
+        } else {
+            this._compute(a, { x: rect.x, y: rect.y, width: rect.width, height: aExtent }, result);
+            this._compute(b, { x: rect.x, y: rect.y + aExtent, width: rect.width, height: rect.height - aExtent }, result);
         }
     }
 }

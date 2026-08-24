@@ -9,9 +9,7 @@ import { FocusBorder } from './windowBorder.js';
 const FOCUS_BORDER_WIDTH = 2;
 const PANEL_BACKGROUND_STYLE = 'background-color: rgba(19,19,19,0.6);';
 
-const MIN_TILE_PX = 200;
 const RESIZE_STEP_PX = 50;
-const MIN_WINDOW_SCREEN_FRACTION = 0.25;
 
 function resizeSidesFromGrabOp(grabOp) {
     let horizontal = null;
@@ -51,8 +49,6 @@ export default class BspTileExtension extends Extension {
         this._grabbedWindow = null;     // window currently being live-dragged; skip it in _layoutTree
         this._activeGrab = null;        // { window, sizeChangedId } while a resize grab is in progress
         this._panelStyleTimeoutId = null;
-        this._rebuildInProgress = false; // true only inside _rebuildAllTrees' insert loop
-        this._pendingSizeChecks = new Map(); // Meta.Window -> { sizeChangedId, debounceId }
 
         this._focusBorder = new FocusBorder(FOCUS_BORDER_WIDTH);
         global.windowGroup.add_child(this._focusBorder);
@@ -144,12 +140,6 @@ export default class BspTileExtension extends Extension {
             this._activeGrab = null;
         }
 
-        for (const [window, pending] of this._pendingSizeChecks) {
-            window.disconnect(pending.sizeChangedId);
-            GLib.source_remove(pending.debounceId);
-        }
-        this._pendingSizeChecks = null;
-
         this._focusedWindowSignals.forEach(({ obj, id }) => obj.disconnect(id));
         this._focusedWindowSignals = [];
         this._focusBorder.destroy();
@@ -207,12 +197,69 @@ export default class BspTileExtension extends Extension {
         const tree = this._treeFor(workspace, monitorIndex, true);
         if (tree.has(window)) return;
 
+        // This monitor's tree is already as full as it can get without
+        // forcing some window below its real minimum size (that's what was
+        // producing the overlap during the stress test). Spill over to the
+        // next workspace instead of cramming it in -- try each workspace
+        // after this one in turn, then fall back to creating a fresh one.
+        if (!tree.hasCapacity()) {
+            const target = this._findWorkspaceWithCapacity(monitorIndex, workspace);
+            if (target !== workspace) {
+                // _insertWindow runs synchronously from the window actor's
+                // 'first-frame' signal -- i.e. from inside Mutter's own frame
+                // processing for that actor. workspace.activate() forces an
+                // immediate restack/animation of actors, which reenters the
+                // compositor mid-frame and crashes it (libmutter assertion
+                // in invalidate_top_window_actor_for_views: frame_in_progress
+                // was still true). Defer the actual switch to the next idle
+                // so it runs after this frame's signal dispatch has fully
+                // unwound, then finish the insert from there.
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    window.change_workspace(target);
+                    target.activate(global.get_current_time());
+                    this._finishInsert(window, target, monitorIndex);
+                    return GLib.SOURCE_REMOVE;
+                });
+                return;
+            }
+            // else: out of workspaces to try (dynamic workspaces disabled
+            // and every existing one is full) -- fall through and tile into
+            // the original tree anyway, same as before this change.
+        }
+
+        this._finishInsert(window, workspace, monitorIndex);
+    }
+
+    _finishInsert(window, workspace, monitorIndex) {
+        const tree = this._treeFor(workspace, monitorIndex, true);
+        if (tree.has(window)) return;
+
         let nearWindow = global.display.get_focus_window();
         if (nearWindow === window) nearWindow = null;
 
         tree.insert(window, nearWindow);
         this._trackWindow(window, workspace, monitorIndex);
         this._layoutTree(tree, workspace, monitorIndex);
+    }
+
+    // Looks for the first workspace after `fromWorkspace` (same monitor)
+    // whose tree still has room for one more compliant split, creating a
+    // new workspace at the end if none of the existing ones qualify. Doesn't
+    // touch `fromWorkspace` itself -- the caller only gets here because that
+    // one is already full. Returns `fromWorkspace` unchanged if dynamic
+    // workspaces are off and there's truly nowhere else to put it.
+    _findWorkspaceWithCapacity(monitorIndex, fromWorkspace) {
+        const wm = global.workspaceManager;
+        const n = wm.get_n_workspaces();
+        for (let i = fromWorkspace.index() + 1; i < n; i++) {
+            const ws = wm.get_workspace_by_index(i);
+            const tree = this._treeFor(ws, monitorIndex, false);
+            if (!tree || tree.hasCapacity()) return ws;
+        }
+
+        const created = wm.append_new_workspace(false, global.get_current_time());
+        if (wm.get_n_workspaces() > n) return created;
+        return fromWorkspace;
     }
 
     // Wires up everything a tiled window needs for as long as it stays
@@ -241,20 +288,12 @@ export default class BspTileExtension extends Extension {
         const state = this._untrackWindow(window);
         if (!state) return;
 
-        const pending = this._pendingSizeChecks.get(window);
-        if (pending) {
-            window.disconnect(pending.sizeChangedId);
-            GLib.source_remove(pending.debounceId);
-            this._pendingSizeChecks.delete(window);
-        }
-
         // Remove from the tree it was actually inserted into, not wherever
         // get_workspace()/get_monitor() say *now* -- avoids leaking a phantom
         // leaf if _checkWindowMigration hasn't caught up yet for some reason.
         const tree = this._treeFor(state.workspace, state.monitorIndex, false);
         if (!tree) return;
         tree.remove(window);
-        tree.forgetMinSize(window);
         this._layoutTree(tree, state.workspace, state.monitorIndex);
     }
 
@@ -298,14 +337,21 @@ export default class BspTileExtension extends Extension {
         const tree = this._treeFor(state.workspace, state.monitorIndex, false);
         if (!tree) return;
 
+        // rectOf(node) -- and therefore the valid ratio range derived from it
+        // -- is stable for the life of a single drag (a split's ratio only
+        // moves the boundary inside its own rect, never the rect itself), so
+        // compute both once here instead of recomputing on every
+        // 'size-changed' tick during the drag.
         const targets = [];
         if (horizontal) {
             const node = tree.findResizeTarget(window, 'row', horizontal === 'E');
-            if (node) targets.push({ node, axis: 'row' });
+            const target = node && this._makeResizeTarget(tree, node, 'row');
+            if (target) targets.push(target);
         }
         if (vertical) {
             const node = tree.findResizeTarget(window, 'col', vertical === 'S');
-            if (node) targets.push({ node, axis: 'col' });
+            const target = node && this._makeResizeTarget(tree, node, 'col');
+            if (target) targets.push(target);
         }
         if (targets.length === 0) return; // dragging a work-area edge, not a shared border
 
@@ -317,21 +363,16 @@ export default class BspTileExtension extends Extension {
             // before it's compared to nodeRect -- otherwise every drag is biased
             // by half a gap in one direction or the other (the "slightly off" bug).
             const halfGap = this._settings.get_uint('inner-gaps') / 2;
-            for (const { node, axis } of targets) {
-                const nodeRect = tree.rectOf(node);
-                if (!nodeRect) continue;
-                let ratio = axis === 'row'
+            for (const { node, axis, nodeRect } of targets) {
+                const ratio = axis === 'row'
                     ? ((horizontal === 'E' ? rect.x + rect.width + halfGap : rect.x - halfGap) - nodeRect.x) / nodeRect.width
                     : ((vertical === 'S' ? rect.y + rect.height + halfGap : rect.y - halfGap) - nodeRect.y) / nodeRect.height;
-                // Keep both sides above a sane pixel floor -- ratio alone doesn't
-                // know the container's absolute size, so a plain 5-95% clamp
-                // still lets a split shrink a window below what it (or its
-                // client, e.g. a terminal's minimum column count) can actually
-                // honor, which desyncs the tree's ratio from the real on-screen
-                // rect once Mutter/the client clamps it back up.
-                const containerPx = axis === 'row' ? nodeRect.width : nodeRect.height;
-                const minRatio = Math.min(0.45, MIN_TILE_PX / containerPx);
-                ratio = Math.min(1 - minRatio, Math.max(minRatio, ratio));
+                // No floor-clamp needed here -- computeRects() now enforces
+                // every split's pixel floor centrally (BspTree._compute), so
+                // an overshot ratio just means this divider "wants" more
+                // than its sibling subtree can currently spare: the layout
+                // stays safe, and the divider springs to the real clamp
+                // point on its own once room frees up (e.g. a window closes).
                 tree.setRatio(node, ratio);
             }
             this._grabbedWindow = window;
@@ -340,6 +381,18 @@ export default class BspTileExtension extends Extension {
         });
 
         this._activeGrab = { window, sizeChangedId };
+    }
+
+    // rectOf(node) is stable for the life of a single drag (a split's ratio
+    // only moves the boundary inside its own rect, never the rect itself),
+    // so resolve it once here instead of on every 'size-changed' tick during
+    // the drag. Returns null if this node has no computed rect yet
+    // (shouldn't happen for an already-tiled window, but mirrors the old
+    // inline guard).
+    _makeResizeTarget(tree, node, axis) {
+        const nodeRect = tree.rectOf(node);
+        if (!nodeRect) return null;
+        return { node, axis, nodeRect };
     }
 
     _onGrabEnd(window) {
@@ -411,23 +464,13 @@ export default class BspTileExtension extends Extension {
         const nodeRect = tree.rectOf(node);
         if (!nodeRect) return;
 
-        // Floor is 25% of the screen's own width/height, not 25% of this
-        // node's (possibly already-subdivided) container -- so a window
-        // never ends up narrower/shorter than a quarter of the monitor,
-        // regardless of how deep in the tree its divider sits. _layoutTree
-        // shaves a full inner-gap off the container's share to get the
-        // window's actual rendered frame size, so that has to be added back
-        // into the floor here -- otherwise the ratio-space floor is met but
-        // the on-screen window still lands short of it by one gap.
-        const wa = state.workspace.get_work_area_for_monitor(state.monitorIndex);
-        const screenPx = isRow ? wa.width : wa.height;
         const containerPx = isRow ? nodeRect.width : nodeRect.height;
-        const innerGap = this._settings.get_uint('inner-gaps');
-        const minRatio = Math.min(0.45, (MIN_WINDOW_SCREEN_FRACTION * screenPx + innerGap) / containerPx);
         const step = RESIZE_STEP_PX / containerPx;
         const ratio = tree.ratioOf(node) + (grow ? step : -step);
 
-        tree.setRatio(node, Math.min(1 - minRatio, Math.max(minRatio, ratio)));
+        // No floor-clamp needed here either -- see the matching comment in
+        // _onGrabBegin's 'size-changed' handler; computeRects() enforces it.
+        tree.setRatio(node, ratio);
         this._layoutTree(tree, state.workspace, state.monitorIndex);
     }
 
@@ -498,116 +541,19 @@ export default class BspTileExtension extends Extension {
                 continue;
             if (window === this._grabbedWindow) continue;
 
-            let width = Math.max(1, Math.round(r.width - inner));
-            let height = Math.max(1, Math.round(r.height - inner));
-
-            // If this window already proved it needs more than this leaf can
-            // give it, ask for its real size instead of the leaf's -- avoids
-            // another clamp-and-relearn round-trip -- and center it in the
-            // leaf rather than pinning it top-left, so an unavoidable
-            // overflow (e.g. too many windows for the screen) reads as
-            // deliberate instead of like a stray misplaced window.
-            const learnedMin = tree.minSizeOf(window);
-            if (learnedMin) {
-                width = Math.max(width, Math.round(learnedMin.width - inner));
-                height = Math.max(height, Math.round(learnedMin.height - inner));
-            }
-
+            const width = Math.max(1, Math.round(r.width - inner));
+            const height = Math.max(1, Math.round(r.height - inner));
             const x = Math.round(r.x + (r.width - width) / 2);
             const y = Math.round(r.y + (r.height - height) / 2);
-            const before = window.get_frame_rect();
-            const unchanged = before.x === x && before.y === y && before.width === width && before.height === height;
 
+            // If a client can't actually honor this (a hard minimum content
+            // size larger than its tile), Mutter/the client just clamps it
+            // bigger than asked -- a minor visual overflow, not tracked or
+            // corrected here. BspTree's floors are a flat, deterministic
+            // MIN_SPLIT_PX with no per-window learning, so there's nothing
+            // async to settle or reconcile after this call.
             window.move_resize_frame(false, x, y, width, height);
-
-            // Border-drag resizing and _rebuildAllTrees' insert loop both
-            // call _layoutTree many times in a row -- skip scheduling a
-            // check on every one of those intermediate requests; each still
-            // schedules one below once things settle down (drag: the next
-            // still-live tick; rebuild: its own final pass).
-            if (this._activeGrab || this._rebuildInProgress) continue;
-            if (unchanged) continue; // nothing asked to change, so nothing to settle or clamp
-
-            this._scheduleSizeCheck(tree, workspace, monitorIndex, window, { width, height });
         }
-    }
-
-    // A fixed delay is fundamentally the wrong tool here -- how long a
-    // Wayland client takes to ack a resize depends on how many other windows
-    // are settling at the same time and on system load, so any guessed
-    // duration is either too short (reads still-in-flight geometry as a
-    // clamp -- this yanked windows around during border-drag resizing and
-    // _rebuildAllTrees bursts) or wastefully long. And reacting to the
-    // *first* 'size-changed' isn't enough either -- Shell can animate a
-    // resize through several intermediate frames, each firing its own
-    // 'size-changed', so the first one can still be mid-transition (this is
-    // what produced a bogus learned minimum from an intermediate, larger
-    // in-between frame). Debounce instead: only check once DEBOUNCE_MS has
-    // passed with no *further* 'size-changed', i.e. once it's actually gone
-    // quiet, with a hard cap so a pathologically restless window can't stall
-    // this forever. Replaces (not stacks) any check already pending for this
-    // same window, so only the most recent request for it is ever checked.
-    _scheduleSizeCheck(tree, workspace, monitorIndex, window, want) {
-        const DEBOUNCE_MS = 150;
-        const MAX_WAIT_MS = 1000;
-
-        const pending = this._pendingSizeChecks.get(window);
-        if (pending) {
-            window.disconnect(pending.sizeChangedId);
-            GLib.source_remove(pending.debounceId);
-        }
-
-        const deadline = GLib.get_monotonic_time() + MAX_WAIT_MS * 1000;
-        let debounceId;
-        const finish = () => {
-            this._pendingSizeChecks.delete(window);
-            window.disconnect(sizeChangedId);
-            GLib.source_remove(debounceId);
-            this._checkOneWindowSize(tree, workspace, monitorIndex, window, want);
-        };
-        const rearm = () => {
-            GLib.source_remove(debounceId);
-            const timeLeftMs = (deadline - GLib.get_monotonic_time()) / 1000;
-            debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.min(DEBOUNCE_MS, Math.max(0, timeLeftMs)), () => {
-                finish();
-                return GLib.SOURCE_REMOVE;
-            });
-        };
-
-        const sizeChangedId = window.connect('size-changed', rearm);
-        debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
-            finish();
-            return GLib.SOURCE_REMOVE;
-        });
-        this._pendingSizeChecks.set(window, { sizeChangedId, debounceId });
-    }
-
-    // A window settling wider/taller than asked means Mutter or the client
-    // itself (e.g. a terminal's minimum column count) clamped it -- the
-    // tree's plan for that leaf was never achievable. Learn the real floor
-    // and re-home the window so _canSplit stops offering it that leaf shape
-    // again.
-    _checkOneWindowSize(tree, workspace, monitorIndex, window, want) {
-        if (!this._settings) return; // disabled since this was scheduled
-        if (this._treeFor(workspace, monitorIndex, false) !== tree) return; // tree was rebuilt/discarded
-        if (!tree.has(window)) return; // closed, or already migrated elsewhere
-
-        const CLAMP_TOLERANCE_PX = 4;
-        const rect = window.get_frame_rect();
-        const clamped = rect.width - want.width > CLAMP_TOLERANCE_PX ||
-            rect.height - want.height > CLAMP_TOLERANCE_PX;
-        if (!clamped) return;
-
-        const inner = this._settings.get_uint('inner-gaps');
-        const learnedNew = tree.learnMinSize(window, {
-            width: rect.width + inner,
-            height: rect.height + inner,
-        });
-        if (!learnedNew) return; // already tried re-homing for this exact floor -- don't thrash
-
-        tree.remove(window);
-        tree.insert(window, null);
-        this._layoutTree(tree, workspace, monitorIndex);
     }
 
     _relayoutAll() {
@@ -621,20 +567,8 @@ export default class BspTileExtension extends Extension {
         for (const [window, state] of this._windowState)
             state.signalIds.forEach(id => window.disconnect(id));
 
-        // Every tree these were checking against is about to be discarded
-        // below, so any pending check is dead weight at best -- and at
-        // worst, if left armed, its 'size-changed' listener can still catch
-        // a signal fired by *this* rebuild's own resizing and misread it
-        // against a stale, no-longer-relevant target size.
-        for (const [window, pending] of this._pendingSizeChecks) {
-            window.disconnect(pending.sizeChangedId);
-            GLib.source_remove(pending.debounceId);
-        }
-        this._pendingSizeChecks.clear();
-
         this._windowState = new Map();
         this._trees = new Map();
-        this._rebuildInProgress = true;
 
         for (const window of global.display.list_all_windows()) {
             if (!isTileable(window)) continue;
@@ -650,14 +584,7 @@ export default class BspTileExtension extends Extension {
             // Relayout immediately -- primes lastRect on the tree's leaves so
             // the NEXT insert into this same tree gets a real orientation
             // decision instead of bspTree.js's {width:1,height:1} fallback.
-            // _rebuildInProgress keeps _layoutTree from scheduling a size
-            // check on any of these intermediate, still-growing shapes.
             this._layoutTree(tree, workspace, monitorIndex);
         }
-
-        this._rebuildInProgress = false;
-        // Every tree is in its final shape now -- one real settle-check pass
-        // per tree, instead of the many mid-rebuild ones skipped above.
-        this._relayoutAll();
     }
 }
