@@ -118,6 +118,10 @@ gsettings set org.gnome.desktop.wm.keybindings switch-input-source "[]"
 gsettings set org.gnome.desktop.wm.keybindings switch-input-source-backward "[]"
 gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>space']"
 
+echo "==> Disable GNOME's built-in Super+Left/Right half-screen tiling (fights with bsptile)"
+gsettings set org.gnome.mutter.keybindings toggle-tiled-left "[]"
+gsettings set org.gnome.mutter.keybindings toggle-tiled-right "[]"
+
 echo "==> Super+Return / Shift+Super+Return / Ctrl+Super+Return: terminal, Firefox, Claude Code"
 CKB_BASE=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
 CKB_SCHEMA=org.gnome.settings-daemon.plugins.media-keys.custom-keybinding

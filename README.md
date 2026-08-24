@@ -66,10 +66,11 @@ so running it twice leaves you in the same state. It will:
    the extension itself: Ptyxis terminal transparency (skipped if you're
    not on Ptyxis), focus-follows-cursor, `Super+W` to close the focused
    window, `Super+Space` for the Activities Overview (GNOME's
-   Spotlight-equivalent search), and three terminal/app shortcuts:
-   `Super+Return` opens a terminal, `Shift+Super+Return` opens a new
-   Firefox window, and `Ctrl+Super+Return` opens a terminal running
-   `claude` in `~/Claude`.
+   Spotlight-equivalent search), disabling GNOME's own built-in
+   `Super+Left`/`Super+Right` half-screen tiling (it fights with bsptile),
+   and three terminal/app shortcuts: `Super+Return` opens a terminal,
+   `Shift+Super+Return` opens a new Firefox window, and
+   `Ctrl+Super+Return` opens a terminal running `claude` in `~/Claude`.
 
 **If the extension doesn't show as enabled after running the script**, it's
 almost always because GNOME Shell hadn't discovered the extensions
