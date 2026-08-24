@@ -216,17 +216,34 @@ export default class BspTileExtension extends Extension {
                 // unwound, then finish the insert from there.
                 GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     window.change_workspace(target);
-                    // Window.activate() alone does NOT reliably switch to
-                    // the window's workspace here if it isn't already the
-                    // active one -- confirmed live, repeatedly: called by
-                    // itself (immediately, and even after an extra delay)
-                    // it silently did nothing. Workspace.activate() has to
-                    // be called explicitly first; once the target workspace
-                    // is actually active, the very same window.activate()
-                    // call focuses this window reliably, no delay needed.
+                    this._finishInsert(window, target, monitorIndex);
                     target.activate(global.get_current_time());
                     window.activate(global.get_current_time());
-                    this._finishInsert(window, target, monitorIndex);
+
+                    // This machine runs focus-mode=mouse (focus-follows-
+                    // cursor). The pointer is still wherever it physically
+                    // was on the OLD workspace, so shortly after the switch
+                    // above, Mutter's own focus-follows-mouse recalculates
+                    // focus based on whatever the pointer now sits over on
+                    // the newly-visible workspace -- usually nothing, which
+                    // silently clobbers the explicit activate() calls above
+                    // (confirmed live via a notify::focus-window stack
+                    // trace: focus reliably went back to null moments
+                    // later, with no Shell JS frames involved at all, i.e.
+                    // straight from Mutter's own core pointer-focus logic).
+                    // Warping the pointer there first didn't stop it --
+                    // apparently a programmatic warp doesn't emit whatever
+                    // real crossing/motion event that logic reacts to (a
+                    // real click did fix it, confirming this is genuinely
+                    // about real pointer-crossing events, not just cursor
+                    // position). So instead: let that one-time reset finish
+                    // happening, then reassert activation once more right
+                    // after it -- same pattern as the panel-style-vs-
+                    // Overview._hideDone() race elsewhere in this file.
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                        window.activate(global.get_current_time());
+                        return GLib.SOURCE_REMOVE;
+                    });
                     return GLib.SOURCE_REMOVE;
                 });
                 return;
