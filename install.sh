@@ -108,6 +108,7 @@ fi
 
 echo "==> Focus follows cursor"
 gsettings set org.gnome.desktop.wm.preferences focus-mode 'mouse'
+gsettings set org.gnome.mutter focus-change-on-pointer-rest false
 
 echo "==> Super+W closes the focused window (kept <Alt>F4 too)"
 gsettings set org.gnome.desktop.wm.keybindings close "['<Alt>F4', '<Super>w']"
