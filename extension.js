@@ -1,3 +1,4 @@
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -49,6 +50,7 @@ export default class BspTileExtension extends Extension {
         this._globalSignals = [];       // [{obj, id}]
         this._grabbedWindow = null;     // window currently being live-dragged; skip it in _layoutTree
         this._activeGrab = null;        // { window, sizeChangedId } while a resize grab is in progress
+        this._panelStyleTimeoutId = null;
 
         this._focusBorder = new FocusBorder(FOCUS_BORDER_WIDTH);
         global.windowGroup.add_child(this._focusBorder);
@@ -85,6 +87,16 @@ export default class BspTileExtension extends Extension {
             this._connectGlobalSignals();
             this._rebuildAllTrees();
             this._onFocusChanged();
+
+            // On a cold boot, something in the shell's post-startup settling
+            // (after 'startup-complete' has already fired) can still clear an
+            // inline style applied this early. Reassert it once more shortly
+            // after everything else has had a chance to finish.
+            this._panelStyleTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                Main.panel.set_style(PANEL_BACKGROUND_STYLE);
+                this._panelStyleTimeoutId = null;
+                return GLib.SOURCE_REMOVE;
+            });
         };
 
         if (Main.layoutManager._startingUp) {
@@ -99,6 +111,11 @@ export default class BspTileExtension extends Extension {
     }
 
     disable() {
+        if (this._panelStyleTimeoutId) {
+            GLib.source_remove(this._panelStyleTimeoutId);
+            this._panelStyleTimeoutId = null;
+        }
+
         this._globalSignals.forEach(({ obj, id }) => obj.disconnect(id));
         this._globalSignals = [];
 
