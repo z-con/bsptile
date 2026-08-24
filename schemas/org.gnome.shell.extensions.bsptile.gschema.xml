@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="bsptile">
+    <schema path="/org/gnome/shell/extensions/bsptile/" id="org.gnome.shell.extensions.bsptile">
+        <key name="inner-gaps" type="u">
+            <default>12</default>
+            <summary>Gap between adjacent tiles, in pixels</summary>
+        </key>
+        <key name="outer-gaps" type="u">
+            <default>12</default>
+            <summary>Gap between tiles and the monitor edge, in pixels</summary>
+        </key>
+        <key name="tile-focused-window" type="as">
+            <default>['&lt;Super&gt;t']</default>
+            <summary>Tile the focused window into the current layout, unmaximizing it first if needed</summary>
+        </key>
+    </schema>
+</schemalist>

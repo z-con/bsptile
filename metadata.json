@@ -1,0 +1,9 @@
+{
+  "uuid": "bsptile@zach.local",
+  "name": "BSP Tile",
+  "description": "Dynamic i3/Hyprland-style binary space partition auto-tiling with gaps.",
+  "shell-version": ["50"],
+  "url": "",
+  "settings-schema": "org.gnome.shell.extensions.bsptile",
+  "version": 1
+}
