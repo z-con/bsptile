@@ -70,6 +70,7 @@ export default class BspTileExtension extends Extension {
         );
 
         const start = () => {
+            Main.panel.set_style(PANEL_BACKGROUND_STYLE);
             this._connectGlobalSignals();
             this._rebuildAllTrees();
             this._onFocusChanged();
