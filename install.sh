@@ -118,4 +118,22 @@ gsettings set org.gnome.desktop.wm.keybindings switch-input-source "[]"
 gsettings set org.gnome.desktop.wm.keybindings switch-input-source-backward "[]"
 gsettings set org.gnome.shell.keybindings toggle-overview "['<Super>space']"
 
+echo "==> Super+Return / Shift+Super+Return / Ctrl+Super+Return: terminal, Firefox, Claude Code"
+CKB_BASE=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
+CKB_SCHEMA=org.gnome.settings-daemon.plugins.media-keys.custom-keybinding
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings \
+    "['${CKB_BASE}custom0/', '${CKB_BASE}custom1/', '${CKB_BASE}custom2/']"
+
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ name "Open Terminal"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ command "ptyxis --new-window"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ binding "<Super>Return"
+
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ name "Open Firefox window"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ command "firefox --new-window"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ binding "<Shift><Super>Return"
+
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ name "Open Terminal in Claude dir"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ command "ptyxis --new-window -d $HOME/Claude -- claude"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ binding "<Primary><Super>Return"
+
 echo "==> Done."
