@@ -32,17 +32,28 @@ MISSING_PKGS=()
 command -v glib-compile-schemas >/dev/null || MISSING_PKGS+=(libglib2.0-bin)
 command -v gnome-extensions >/dev/null || MISSING_PKGS+=(gnome-shell)
 
-if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
-    echo "    Installing missing packages: ${MISSING_PKGS[*]}"
+NEED_BROWSER_CONNECTOR=0
+dpkg -s gnome-browser-connector >/dev/null 2>&1 || NEED_BROWSER_CONNECTOR=1
+
+if [ "${#MISSING_PKGS[@]}" -gt 0 ] || [ "$NEED_BROWSER_CONNECTOR" -eq 1 ]; then
     echo "    (needs sudo -- run this script from a real terminal, not a"
     echo "     non-interactive session, so the password/fingerprint prompt works)"
+    echo "    Refreshing package lists (apt update) -- matters most on a freshly"
+    echo "    installed machine, where they may be empty or stale"
+    sudo apt update
+fi
+
+if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+    echo "    Installing missing packages: ${MISSING_PKGS[*]}"
     sudo apt install -y "${MISSING_PKGS[@]}"
 else
     echo "    All present (libglib2.0-bin, gnome-shell)."
 fi
 
-echo "    Installing gnome-browser-connector (native host for extensions.gnome.org)"
-dpkg -s gnome-browser-connector >/dev/null 2>&1 || sudo apt install -y gnome-browser-connector
+if [ "$NEED_BROWSER_CONNECTOR" -eq 1 ]; then
+    echo "    Installing gnome-browser-connector (native host for extensions.gnome.org)"
+    sudo apt install -y gnome-browser-connector
+fi
 
 echo "    That covers everything installable from the command line. The last piece --"
 echo "    the browser-side add-on that lets extensions.gnome.org install extensions --"
@@ -69,6 +80,15 @@ fi
 echo "==> Compiling bsptile's gsettings schema"
 glib-compile-schemas "$SCRIPT_DIR/schemas/"
 
+SHELL_VERSION="$(gnome-shell --version | grep -oE '[0-9]+' | head -1)"
+if ! grep -q "\"$SHELL_VERSION\"" "$SCRIPT_DIR/metadata.json"; then
+    echo "    NOTE: this system is running GNOME Shell $SHELL_VERSION, which isn't in"
+    echo "    metadata.json's shell-version list. GNOME will likely refuse to load"
+    echo "    the extension. Either add \"$SHELL_VERSION\" to shell-version in"
+    echo "    $SCRIPT_DIR/metadata.json, or run:"
+    echo "      gsettings set org.gnome.shell disable-extension-version-validation true"
+fi
+
 echo "==> Enabling bsptile"
 gnome-extensions enable "$UUID" || {
     echo "    Could not enable it yet -- if this is a fresh install GNOME Shell"
@@ -76,10 +96,15 @@ gnome-extensions enable "$UUID" || {
     echo "    Log out and back in, then re-run this script."
 }
 
-echo "==> Ptyxis: transparency + no restored maximized state on new windows"
-PTYXIS_PROFILE=$(gsettings get org.gnome.Ptyxis default-profile-uuid | tr -d "'")
-gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/${PTYXIS_PROFILE}/" opacity 0.6
-gsettings set org.gnome.Ptyxis restore-window-size false
+if gsettings list-schemas | grep -q '^org.gnome.Ptyxis$'; then
+    echo "==> Ptyxis: transparency + no restored maximized state on new windows"
+    PTYXIS_PROFILE=$(gsettings get org.gnome.Ptyxis default-profile-uuid | tr -d "'")
+    gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/${PTYXIS_PROFILE}/" opacity 0.6
+    gsettings set org.gnome.Ptyxis restore-window-size false
+else
+    echo "==> Skipping Ptyxis settings (not installed -- this Ubuntu version likely"
+    echo "    ships a different default terminal)"
+fi
 
 echo "==> Focus follows cursor"
 gsettings set org.gnome.desktop.wm.preferences focus-mode 'mouse'
