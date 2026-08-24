@@ -354,11 +354,16 @@ export default class BspTileExtension extends Extension {
         // Floor is 25% of the screen's own width/height, not 25% of this
         // node's (possibly already-subdivided) container -- so a window
         // never ends up narrower/shorter than a quarter of the monitor,
-        // regardless of how deep in the tree its divider sits.
+        // regardless of how deep in the tree its divider sits. _layoutTree
+        // shaves a full inner-gap off the container's share to get the
+        // window's actual rendered frame size, so that has to be added back
+        // into the floor here -- otherwise the ratio-space floor is met but
+        // the on-screen window still lands short of it by one gap.
         const wa = state.workspace.get_work_area_for_monitor(state.monitorIndex);
         const screenPx = isRow ? wa.width : wa.height;
         const containerPx = isRow ? nodeRect.width : nodeRect.height;
-        const minRatio = Math.min(0.45, (MIN_WINDOW_SCREEN_FRACTION * screenPx) / containerPx);
+        const innerGap = this._settings.get_uint('inner-gaps');
+        const minRatio = Math.min(0.45, (MIN_WINDOW_SCREEN_FRACTION * screenPx + innerGap) / containerPx);
         const step = RESIZE_STEP_PX / containerPx;
         const ratio = tree.ratioOf(node) + (grow ? step : -step);
 
