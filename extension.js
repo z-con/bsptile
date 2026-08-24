@@ -61,6 +61,13 @@ export default class BspTileExtension extends Extension {
             Shell.ActionMode.NORMAL,
             () => this._tileFocusedWindow()
         );
+        Main.wm.addKeybinding(
+            'untile-focused-window',
+            this._settings,
+            Meta.KeyBindingFlags.NONE,
+            Shell.ActionMode.NORMAL,
+            () => this._untileFocusedWindow()
+        );
 
         const start = () => {
             this._connectGlobalSignals();
@@ -96,6 +103,7 @@ export default class BspTileExtension extends Extension {
         Main.panel.set_style(null);
 
         Main.wm.removeKeybinding('tile-focused-window');
+        Main.wm.removeKeybinding('untile-focused-window');
 
         for (const [window, state] of this._windowState) {
             state.signalIds.forEach(id => window.disconnect(id));
@@ -146,25 +154,74 @@ export default class BspTileExtension extends Extension {
         if (nearWindow === window) nearWindow = null;
 
         tree.insert(window, nearWindow);
-
-        const unmanagingId = window.connect('unmanaging', () => this._onWindowRemoved(window));
-        this._windowState.set(window, { signalIds: [unmanagingId], workspace, monitorIndex });
-
+        this._trackWindow(window, workspace, monitorIndex);
         this._layoutTree(tree, workspace, monitorIndex);
     }
 
-    _onWindowRemoved(window) {
+    // Wires up everything a tiled window needs for as long as it stays
+    // tracked: removal on close, and migration-detection so a window
+    // dragged to another workspace/monitor (via keybinding or drag) moves
+    // between trees instead of staying stuck in its original one, invisibly
+    // laid out on a workspace it's no longer even on.
+    _trackWindow(window, workspace, monitorIndex) {
+        const signalIds = [
+            window.connect('unmanaging', () => this._onWindowRemoved(window)),
+            window.connect('workspace-changed', () => this._checkWindowMigration(window)),
+            window.connect('position-changed', () => this._checkWindowMigration(window)),
+        ];
+        this._windowState.set(window, { signalIds, workspace, monitorIndex });
+    }
+
+    _untrackWindow(window) {
         const state = this._windowState.get(window);
-        if (!state) return;
+        if (!state) return null;
+        state.signalIds.forEach(id => window.disconnect(id));
         this._windowState.delete(window);
+        return state;
+    }
+
+    _onWindowRemoved(window) {
+        const state = this._untrackWindow(window);
+        if (!state) return;
 
         // Remove from the tree it was actually inserted into, not wherever
         // get_workspace()/get_monitor() say *now* -- avoids leaking a phantom
-        // leaf if the window was ever dragged to another workspace/monitor.
+        // leaf if _checkWindowMigration hasn't caught up yet for some reason.
         const tree = this._treeFor(state.workspace, state.monitorIndex, false);
         if (!tree) return;
         tree.remove(window);
         this._layoutTree(tree, state.workspace, state.monitorIndex);
+    }
+
+    _checkWindowMigration(window) {
+        const state = this._windowState.get(window);
+        if (!state) return;
+
+        const newWorkspace = window.get_workspace();
+        const newMonitor = window.get_monitor();
+        if (newWorkspace === state.workspace && newMonitor === state.monitorIndex) return;
+
+        const oldTree = this._treeFor(state.workspace, state.monitorIndex, false);
+        if (oldTree) {
+            oldTree.remove(window);
+            this._layoutTree(oldTree, state.workspace, state.monitorIndex);
+        }
+
+        if (!newWorkspace) {
+            // No workspace (e.g. stuck-to-all-workspaces) -- nothing sane to
+            // tile it into; drop tracking rather than leave stale state.
+            this._untrackWindow(window);
+            return;
+        }
+
+        state.workspace = newWorkspace;
+        state.monitorIndex = newMonitor;
+
+        const newTree = this._treeFor(newWorkspace, newMonitor, true);
+        let nearWindow = global.display.get_focus_window();
+        if (nearWindow === window) nearWindow = null;
+        newTree.insert(window, nearWindow);
+        this._layoutTree(newTree, newWorkspace, newMonitor);
     }
 
     _onGrabBegin(window, grabOp) {
@@ -246,6 +303,12 @@ export default class BspTileExtension extends Extension {
         } else {
             insertNow();
         }
+    }
+
+    _untileFocusedWindow() {
+        const win = global.display.get_focus_window();
+        if (!win) return;
+        this._onWindowRemoved(win); // same untrack-and-reclaim-space path a close uses
     }
 
     _onFocusChanged() {
@@ -347,9 +410,7 @@ export default class BspTileExtension extends Extension {
 
             const tree = this._treeFor(workspace, monitorIndex, true);
             tree.insert(window, null); // always spiral-fallback during a rebuild
-
-            const unmanagingId = window.connect('unmanaging', () => this._onWindowRemoved(window));
-            this._windowState.set(window, { signalIds: [unmanagingId], workspace, monitorIndex });
+            this._trackWindow(window, workspace, monitorIndex);
 
             // Relayout immediately -- primes lastRect on the tree's leaves so
             // the NEXT insert into this same tree gets a real orientation

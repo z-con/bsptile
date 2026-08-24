@@ -4,6 +4,13 @@
 // New windows split whichever leaf they land near along its longer axis,
 // which is what produces the dwindle/fibonacci-style spiral.
 
+// Below this, splitting a leaf would hand at least one side a tile smaller
+// than most apps' actual minimum size, so insert() prefers a roomier leaf
+// instead when one exists (matters most for the 5th+ window in a deep
+// spiral, where the most-recently-split corner runs out of space first
+// while the rest of the tree still has plenty of room).
+const MIN_SPLIT_PX = 200;
+
 class BspNode {
     constructor({ window = null, orientation = null, ratio = 0.5, children = null, parent = null } = {}) {
         this.window = window;
@@ -43,6 +50,7 @@ export class BspTree {
 
         let target = nearWindow ? this._leaves.get(nearWindow) : null;
         if (!target) target = this._lastLeaf();
+        if (!this._canSplit(target)) target = this._largestLeaf();
 
         const rect = target.lastRect || { width: 1, height: 1 };
         const orientation = rect.width >= rect.height ? 'row' : 'col';
@@ -84,6 +92,36 @@ export class BspTree {
         let node = this.root;
         while (!node.isLeaf) node = node.children[1];
         return node;
+    }
+
+    // True if splitting this leaf along its longer axis would leave both
+    // resulting sides at or above MIN_SPLIT_PX. No layout info yet (very
+    // first insert into a leaf that's never been through computeRects)
+    // always allows the split -- there's nothing better to fall back to.
+    _canSplit(node) {
+        const rect = node.lastRect;
+        if (!rect) return true;
+        return Math.max(rect.width, rect.height) >= 2 * MIN_SPLIT_PX;
+    }
+
+    _largestLeaf() {
+        let best = null;
+        let bestArea = -1;
+        const walk = (node) => {
+            if (node.isLeaf) {
+                const rect = node.lastRect;
+                const area = rect ? rect.width * rect.height : Infinity;
+                if (area > bestArea) {
+                    bestArea = area;
+                    best = node;
+                }
+            } else {
+                walk(node.children[0]);
+                walk(node.children[1]);
+            }
+        };
+        walk(this.root);
+        return best;
     }
 
     // Walks up from `window`'s leaf to find the ancestor split that a resize

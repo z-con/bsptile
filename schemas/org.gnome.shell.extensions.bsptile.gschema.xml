@@ -13,5 +13,9 @@
             <default>['&lt;Super&gt;t']</default>
             <summary>Tile the focused window into the current layout, unmaximizing it first if needed</summary>
         </key>
+        <key name="untile-focused-window" type="as">
+            <default>['&lt;Super&gt;&lt;Shift&gt;t']</default>
+            <summary>Remove the focused window from the tiled layout, leaving it floating in place</summary>
+        </key>
     </schema>
 </schemalist>

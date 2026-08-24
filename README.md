@@ -22,6 +22,11 @@ ES module) extension API, rather than a port of an older tiling extension.
 - **Slightly transparent top panel.**
 - **`Super+T`** -- pull the focused window into the tiled layout, even if
   it's currently maximized (unmaximizes it first).
+- **`Super+Shift+T`** -- untile the focused window, leaving it floating
+  exactly where it was; its sibling reclaims the space.
+- **Workspace/monitor migration** -- drag a tiled window to another
+  workspace or monitor (or move it via keybinding) and it moves between
+  trees instead of staying stuck in its original one.
 
 None of this touches floating windows you don't tile -- a window only
 enters the tree via `window-created` or `Super+T`.
@@ -91,15 +96,21 @@ of the extension, so undo them the same way you'd change any other setting.
 
 ## Known limitations
 
-- No floating-window toggle -- everything not maximized/transient/dialog
-  gets auto-tiled on creation; there's no "detile" action yet.
-- Not workspace-migration-aware -- dragging a tiled window to another
-  workspace or monitor doesn't move it between trees; it stays tracked
-  under wherever it was inserted.
-- A deep spiral can ask a window for a size below its actual minimum
-  (e.g. a terminal's minimum column count); there's a 200px floor on tile
-  size to keep this rare, but it's not airtight.
-- Multi-monitor is implemented but not tested beyond a single monitor.
+- Multi-monitor is implemented -- trees are keyed per-monitor, and moving a
+  tiled window to a different monitor migrates it into that monitor's tree
+  -- but only code-reviewed, not physically tested on real multi-monitor
+  hardware (this machine has one monitor).
+- A deep spiral prefers redistributing new windows into whichever leaf has
+  the most room once a split would drop below ~200px on its short axis, so
+  tile sizes plateau instead of shrinking indefinitely -- but it's a
+  heuristic, not a hard guarantee. A window can still end up smaller than
+  its actual minimum size (e.g. a terminal's minimum column count) if every
+  leaf is already cramped; the resize path has an equivalent floor to keep
+  its ratio from drifting out of sync with reality when that happens.
+
+`Super+T` tiles the focused window and `Super+Shift+T` untiles it (leaving
+it exactly where it was, as a floating window), so there's no scenario
+where a window is stuck one way or the other.
 
 ## Repo layout
 
