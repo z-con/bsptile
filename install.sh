@@ -41,6 +41,15 @@ else
     echo "    All present (libglib2.0-bin, gnome-shell)."
 fi
 
+echo "    Installing gnome-browser-connector (native host for extensions.gnome.org)"
+dpkg -s gnome-browser-connector >/dev/null 2>&1 || sudo apt install -y gnome-browser-connector
+
+echo "    That covers everything installable from the command line. The last piece --"
+echo "    the browser-side add-on that lets extensions.gnome.org install extensions --"
+echo "    has to be added manually from your browser's own store. Open whichever applies:"
+echo "      Chrome/Chromium: https://chromewebstore.google.com/detail/gphhapmejobijbbhgpjhcjognlahblep"
+echo "      Firefox:         https://addons.mozilla.org/firefox/addon/gnome-shell-integration/"
+
 echo "==> Installing bsptile into GNOME's extensions directory"
 mkdir -p "$(dirname "$EXT_LINK")"
 if [ -L "$EXT_LINK" ]; then
