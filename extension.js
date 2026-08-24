@@ -97,6 +97,24 @@ export default class BspTileExtension extends Extension {
                 this._panelStyleTimeoutId = null;
                 return GLib.SOURCE_REMOVE;
             });
+
+            // The shell's own Overview._hideDone() clears Main.panel's inline
+            // style to null every time the overview finishes closing, AFTER
+            // it emits 'hidden' (confirmed live via Looking Glass: a stack
+            // trace on the style-clearing notify showed overview.js's
+            // _hideDone calling it a few lines after _changeShownState
+            // fires 'hidden'). So reapplying synchronously from a 'hidden'
+            // handler loses the race — it runs earlier in the same call
+            // stack, before the shell's own reset later in that function.
+            // Defer to the next idle iteration so we run after _hideDone
+            // has fully unwound.
+            const overviewHiddenId = Main.overview.connect('hidden', () => {
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    Main.panel.set_style(PANEL_BACKGROUND_STYLE);
+                    return GLib.SOURCE_REMOVE;
+                });
+            });
+            this._globalSignals.push({ obj: Main.overview, id: overviewHiddenId });
         };
 
         if (Main.layoutManager._startingUp) {
