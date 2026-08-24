@@ -24,6 +24,11 @@ ES module) extension API, rather than a port of an older tiling extension.
   it's currently maximized (unmaximizes it first).
 - **`Super+Shift+T`** -- untile the focused window, leaving it floating
   exactly where it was; its sibling reclaims the space.
+- **`Ctrl+Super+Arrow keys`** -- move the shared divider adjacent to the
+  focused window a step in that direction (keyboard equivalent of
+  border-drag resizing). If that edge borders the screen instead of a
+  sibling, the opposite divider moves instead, so the screen-edge side
+  stays put and the focused window resizes itself.
 - **Workspace/monitor migration** -- drag a tiled window to another
   workspace or monitor (or move it via keybinding) and it moves between
   trees instead of staying stuck in its original one.
@@ -79,6 +84,7 @@ Everything extension-specific lives under `org.gnome.shell.extensions.bsptile`:
 gsettings set org.gnome.shell.extensions.bsptile inner-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile outer-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile tile-focused-window "['<Super>t']"
+gsettings set org.gnome.shell.extensions.bsptile resize-left "['<Control><Super>Left']"
 ```
 
 (If you run these against a clone that isn't the one symlinked into

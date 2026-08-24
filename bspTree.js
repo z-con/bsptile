@@ -152,6 +152,10 @@ export class BspTree {
         return node.lastRect || null;
     }
 
+    ratioOf(node) {
+        return node.ratio;
+    }
+
     setRatio(node, ratio) {
         node.ratio = Math.min(0.95, Math.max(0.05, ratio));
     }

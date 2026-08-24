@@ -17,5 +17,21 @@
             <default>['&lt;Super&gt;&lt;Shift&gt;t']</default>
             <summary>Remove the focused window from the tiled layout, leaving it floating in place</summary>
         </key>
+        <key name="resize-left" type="as">
+            <default>['&lt;Control&gt;&lt;Super&gt;Left']</default>
+            <summary>Move the shared divider left, keeping the opposite screen edge fixed</summary>
+        </key>
+        <key name="resize-right" type="as">
+            <default>['&lt;Control&gt;&lt;Super&gt;Right']</default>
+            <summary>Move the shared divider right, keeping the opposite screen edge fixed</summary>
+        </key>
+        <key name="resize-up" type="as">
+            <default>['&lt;Control&gt;&lt;Super&gt;Up']</default>
+            <summary>Move the shared divider up, keeping the opposite screen edge fixed</summary>
+        </key>
+        <key name="resize-down" type="as">
+            <default>['&lt;Control&gt;&lt;Super&gt;Down']</default>
+            <summary>Move the shared divider down, keeping the opposite screen edge fixed</summary>
+        </key>
     </schema>
 </schemalist>

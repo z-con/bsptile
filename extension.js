@@ -9,6 +9,8 @@ const FOCUS_BORDER_WIDTH = 2;
 const PANEL_BACKGROUND_STYLE = 'background-color: rgba(19,19,19,0.6);';
 
 const MIN_TILE_PX = 200;
+const RESIZE_STEP_PX = 50;
+const MIN_WINDOW_SCREEN_FRACTION = 0.25;
 
 function resizeSidesFromGrabOp(grabOp) {
     let horizontal = null;
@@ -68,6 +70,15 @@ export default class BspTileExtension extends Extension {
             Shell.ActionMode.NORMAL,
             () => this._untileFocusedWindow()
         );
+        for (const direction of ['left', 'right', 'up', 'down']) {
+            Main.wm.addKeybinding(
+                `resize-${direction}`,
+                this._settings,
+                Meta.KeyBindingFlags.NONE,
+                Shell.ActionMode.NORMAL,
+                () => this._resizeFocused(direction)
+            );
+        }
 
         const start = () => {
             Main.panel.set_style(PANEL_BACKGROUND_STYLE);
@@ -105,6 +116,8 @@ export default class BspTileExtension extends Extension {
 
         Main.wm.removeKeybinding('tile-focused-window');
         Main.wm.removeKeybinding('untile-focused-window');
+        for (const direction of ['left', 'right', 'up', 'down'])
+            Main.wm.removeKeybinding(`resize-${direction}`);
 
         for (const [window, state] of this._windowState) {
             state.signalIds.forEach(id => window.disconnect(id));
@@ -310,6 +323,47 @@ export default class BspTileExtension extends Extension {
         const win = global.display.get_focus_window();
         if (!win) return;
         this._onWindowRemoved(win); // same untrack-and-reclaim-space path a close uses
+    }
+
+    // Keyboard equivalent of border-drag resizing: nudges the shared divider
+    // adjacent to the focused window one step in the given direction.
+    // Prefers the divider on that literal edge (e.g. the window's own west
+    // edge for 'left'); if that edge borders the work area instead of a
+    // sibling, falls back to the opposite edge so the screen-edge side stays
+    // fixed and the focused window resizes itself instead.
+    _resizeFocused(direction) {
+        const win = global.display.get_focus_window();
+        if (!win) return;
+        const state = this._windowState.get(win);
+        if (!state) return; // not tiled
+
+        const tree = this._treeFor(state.workspace, state.monitorIndex, false);
+        if (!tree) return;
+
+        const isRow = direction === 'left' || direction === 'right';
+        const orientation = isRow ? 'row' : 'col';
+        const grow = direction === 'right' || direction === 'down';
+
+        let node = tree.findResizeTarget(win, orientation, grow);
+        if (!node) node = tree.findResizeTarget(win, orientation, !grow);
+        if (!node) return; // alone on this axis -- nothing to resize against
+
+        const nodeRect = tree.rectOf(node);
+        if (!nodeRect) return;
+
+        // Floor is 25% of the screen's own width/height, not 25% of this
+        // node's (possibly already-subdivided) container -- so a window
+        // never ends up narrower/shorter than a quarter of the monitor,
+        // regardless of how deep in the tree its divider sits.
+        const wa = state.workspace.get_work_area_for_monitor(state.monitorIndex);
+        const screenPx = isRow ? wa.width : wa.height;
+        const containerPx = isRow ? nodeRect.width : nodeRect.height;
+        const minRatio = Math.min(0.45, (MIN_WINDOW_SCREEN_FRACTION * screenPx) / containerPx);
+        const step = RESIZE_STEP_PX / containerPx;
+        const ratio = tree.ratioOf(node) + (grow ? step : -step);
+
+        tree.setRatio(node, Math.min(1 - minRatio, Math.max(minRatio, ratio)));
+        this._layoutTree(tree, state.workspace, state.monitorIndex);
     }
 
     _onFocusChanged() {
