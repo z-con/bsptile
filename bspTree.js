@@ -29,6 +29,7 @@ export class BspTree {
     constructor() {
         this.root = null;
         this._leaves = new Map(); // Meta.Window -> BspNode
+        this._minSizes = new Map(); // Meta.Window -> {width, height}, learned from actual applied resizes
     }
 
     get isEmpty() {
@@ -67,6 +68,34 @@ export class BspTree {
         this._leaves.set(window, newLeaf);
     }
 
+    // Records a window's real minimum size, learned by the caller comparing
+    // a requested move_resize_frame() against what actually landed once the
+    // resize settled. Tracks each dimension's max independently -- a later
+    // observation with a taller-but-narrower reading (e.g. a stale width
+    // sample) must not overwrite a previously-confirmed wider dimension.
+    // Returns false (and stores nothing) if this isn't new information, so
+    // callers can tell "already knew that" apart from "just learned
+    // something" without keeping their own shadow copy.
+    learnMinSize(window, size) {
+        const prev = this._minSizes.get(window);
+        const width = prev ? Math.max(prev.width, size.width) : size.width;
+        const height = prev ? Math.max(prev.height, size.height) : size.height;
+        if (prev && width === prev.width && height === prev.height) return false;
+        this._minSizes.set(window, { width, height });
+        return true;
+    }
+
+    minSizeOf(window) {
+        return this._minSizes.get(window) || null;
+    }
+
+    // Only for a window that's actually gone (unmanaged) -- an internal
+    // remove()+insert() done to re-home a window still keeps its learned
+    // size, since that's the whole reason to re-home it.
+    forgetMinSize(window) {
+        this._minSizes.delete(window);
+    }
+
     remove(window) {
         const leaf = this._leaves.get(window);
         if (!leaf) return;
@@ -95,13 +124,21 @@ export class BspTree {
     }
 
     // True if splitting this leaf along its longer axis would leave both
-    // resulting sides at or above MIN_SPLIT_PX. No layout info yet (very
-    // first insert into a leaf that's never been through computeRects)
-    // always allows the split -- there's nothing better to fall back to.
+    // resulting sides at or above the relevant floor. That floor is the
+    // window's own learned minimum (along whichever axis the split actually
+    // divides) when we have one, else the generic MIN_SPLIT_PX guess. No
+    // layout info yet (very first insert into a leaf that's never been
+    // through computeRects) always allows the split -- there's nothing
+    // better to fall back to.
     _canSplit(node) {
         const rect = node.lastRect;
         if (!rect) return true;
-        return Math.max(rect.width, rect.height) >= 2 * MIN_SPLIT_PX;
+        const splitsWidth = rect.width >= rect.height; // mirrors insert()'s orientation choice
+        const long = splitsWidth ? rect.width : rect.height;
+        const learned = node.window ? this._minSizes.get(node.window) : null;
+        const learnedAlongAxis = learned ? (splitsWidth ? learned.width : learned.height) : 0;
+        const floor = Math.max(learnedAlongAxis, MIN_SPLIT_PX);
+        return long >= 2 * floor;
     }
 
     _largestLeaf() {

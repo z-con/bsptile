@@ -51,6 +51,8 @@ export default class BspTileExtension extends Extension {
         this._grabbedWindow = null;     // window currently being live-dragged; skip it in _layoutTree
         this._activeGrab = null;        // { window, sizeChangedId } while a resize grab is in progress
         this._panelStyleTimeoutId = null;
+        this._rebuildInProgress = false; // true only inside _rebuildAllTrees' insert loop
+        this._pendingSizeChecks = new Map(); // Meta.Window -> { sizeChangedId, debounceId }
 
         this._focusBorder = new FocusBorder(FOCUS_BORDER_WIDTH);
         global.windowGroup.add_child(this._focusBorder);
@@ -141,6 +143,12 @@ export default class BspTileExtension extends Extension {
             this._activeGrab.window.disconnect(this._activeGrab.sizeChangedId);
             this._activeGrab = null;
         }
+
+        for (const [window, pending] of this._pendingSizeChecks) {
+            window.disconnect(pending.sizeChangedId);
+            GLib.source_remove(pending.debounceId);
+        }
+        this._pendingSizeChecks = null;
 
         this._focusedWindowSignals.forEach(({ obj, id }) => obj.disconnect(id));
         this._focusedWindowSignals = [];
@@ -233,12 +241,20 @@ export default class BspTileExtension extends Extension {
         const state = this._untrackWindow(window);
         if (!state) return;
 
+        const pending = this._pendingSizeChecks.get(window);
+        if (pending) {
+            window.disconnect(pending.sizeChangedId);
+            GLib.source_remove(pending.debounceId);
+            this._pendingSizeChecks.delete(window);
+        }
+
         // Remove from the tree it was actually inserted into, not wherever
         // get_workspace()/get_monitor() say *now* -- avoids leaking a phantom
         // leaf if _checkWindowMigration hasn't caught up yet for some reason.
         const tree = this._treeFor(state.workspace, state.monitorIndex, false);
         if (!tree) return;
         tree.remove(window);
+        tree.forgetMinSize(window);
         this._layoutTree(tree, state.workspace, state.monitorIndex);
     }
 
@@ -330,6 +346,15 @@ export default class BspTileExtension extends Extension {
         if (this._activeGrab && this._activeGrab.window === window) {
             window.disconnect(this._activeGrab.sizeChangedId);
             this._activeGrab = null;
+
+            // While the drag was live, _layoutTree skipped its clamp check
+            // on every tick (sizes were expected to be in flux). The sibling
+            // leaves it resized as a side effect of the ratio change are
+            // done moving now, so run one real pass to catch a sibling that
+            // got clamped smaller than the drag's math intended.
+            const state = this._windowState.get(window);
+            const tree = state && this._treeFor(state.workspace, state.monitorIndex, false);
+            if (tree) this._layoutTree(tree, state.workspace, state.monitorIndex);
         }
     }
 
@@ -472,14 +497,117 @@ export default class BspTileExtension extends Extension {
             if (window.minimized || window.maximizedHorizontally || window.maximizedVertically)
                 continue;
             if (window === this._grabbedWindow) continue;
-            window.move_resize_frame(
-                false,
-                Math.round(r.x + inner / 2),
-                Math.round(r.y + inner / 2),
-                Math.max(1, Math.round(r.width - inner)),
-                Math.max(1, Math.round(r.height - inner))
-            );
+
+            let width = Math.max(1, Math.round(r.width - inner));
+            let height = Math.max(1, Math.round(r.height - inner));
+
+            // If this window already proved it needs more than this leaf can
+            // give it, ask for its real size instead of the leaf's -- avoids
+            // another clamp-and-relearn round-trip -- and center it in the
+            // leaf rather than pinning it top-left, so an unavoidable
+            // overflow (e.g. too many windows for the screen) reads as
+            // deliberate instead of like a stray misplaced window.
+            const learnedMin = tree.minSizeOf(window);
+            if (learnedMin) {
+                width = Math.max(width, Math.round(learnedMin.width - inner));
+                height = Math.max(height, Math.round(learnedMin.height - inner));
+            }
+
+            const x = Math.round(r.x + (r.width - width) / 2);
+            const y = Math.round(r.y + (r.height - height) / 2);
+            const before = window.get_frame_rect();
+            const unchanged = before.x === x && before.y === y && before.width === width && before.height === height;
+
+            window.move_resize_frame(false, x, y, width, height);
+
+            // Border-drag resizing and _rebuildAllTrees' insert loop both
+            // call _layoutTree many times in a row -- skip scheduling a
+            // check on every one of those intermediate requests; each still
+            // schedules one below once things settle down (drag: the next
+            // still-live tick; rebuild: its own final pass).
+            if (this._activeGrab || this._rebuildInProgress) continue;
+            if (unchanged) continue; // nothing asked to change, so nothing to settle or clamp
+
+            this._scheduleSizeCheck(tree, workspace, monitorIndex, window, { width, height });
         }
+    }
+
+    // A fixed delay is fundamentally the wrong tool here -- how long a
+    // Wayland client takes to ack a resize depends on how many other windows
+    // are settling at the same time and on system load, so any guessed
+    // duration is either too short (reads still-in-flight geometry as a
+    // clamp -- this yanked windows around during border-drag resizing and
+    // _rebuildAllTrees bursts) or wastefully long. And reacting to the
+    // *first* 'size-changed' isn't enough either -- Shell can animate a
+    // resize through several intermediate frames, each firing its own
+    // 'size-changed', so the first one can still be mid-transition (this is
+    // what produced a bogus learned minimum from an intermediate, larger
+    // in-between frame). Debounce instead: only check once DEBOUNCE_MS has
+    // passed with no *further* 'size-changed', i.e. once it's actually gone
+    // quiet, with a hard cap so a pathologically restless window can't stall
+    // this forever. Replaces (not stacks) any check already pending for this
+    // same window, so only the most recent request for it is ever checked.
+    _scheduleSizeCheck(tree, workspace, monitorIndex, window, want) {
+        const DEBOUNCE_MS = 150;
+        const MAX_WAIT_MS = 1000;
+
+        const pending = this._pendingSizeChecks.get(window);
+        if (pending) {
+            window.disconnect(pending.sizeChangedId);
+            GLib.source_remove(pending.debounceId);
+        }
+
+        const deadline = GLib.get_monotonic_time() + MAX_WAIT_MS * 1000;
+        let debounceId;
+        const finish = () => {
+            this._pendingSizeChecks.delete(window);
+            window.disconnect(sizeChangedId);
+            GLib.source_remove(debounceId);
+            this._checkOneWindowSize(tree, workspace, monitorIndex, window, want);
+        };
+        const rearm = () => {
+            GLib.source_remove(debounceId);
+            const timeLeftMs = (deadline - GLib.get_monotonic_time()) / 1000;
+            debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.min(DEBOUNCE_MS, Math.max(0, timeLeftMs)), () => {
+                finish();
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+
+        const sizeChangedId = window.connect('size-changed', rearm);
+        debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
+            finish();
+            return GLib.SOURCE_REMOVE;
+        });
+        this._pendingSizeChecks.set(window, { sizeChangedId, debounceId });
+    }
+
+    // A window settling wider/taller than asked means Mutter or the client
+    // itself (e.g. a terminal's minimum column count) clamped it -- the
+    // tree's plan for that leaf was never achievable. Learn the real floor
+    // and re-home the window so _canSplit stops offering it that leaf shape
+    // again.
+    _checkOneWindowSize(tree, workspace, monitorIndex, window, want) {
+        if (!this._settings) return; // disabled since this was scheduled
+        if (this._treeFor(workspace, monitorIndex, false) !== tree) return; // tree was rebuilt/discarded
+        if (!tree.has(window)) return; // closed, or already migrated elsewhere
+
+        const CLAMP_TOLERANCE_PX = 4;
+        const rect = window.get_frame_rect();
+        const clamped = rect.width - want.width > CLAMP_TOLERANCE_PX ||
+            rect.height - want.height > CLAMP_TOLERANCE_PX;
+        if (!clamped) return;
+
+        const inner = this._settings.get_uint('inner-gaps');
+        const learnedNew = tree.learnMinSize(window, {
+            width: rect.width + inner,
+            height: rect.height + inner,
+        });
+        if (!learnedNew) return; // already tried re-homing for this exact floor -- don't thrash
+
+        tree.remove(window);
+        tree.insert(window, null);
+        this._layoutTree(tree, workspace, monitorIndex);
     }
 
     _relayoutAll() {
@@ -493,8 +621,20 @@ export default class BspTileExtension extends Extension {
         for (const [window, state] of this._windowState)
             state.signalIds.forEach(id => window.disconnect(id));
 
+        // Every tree these were checking against is about to be discarded
+        // below, so any pending check is dead weight at best -- and at
+        // worst, if left armed, its 'size-changed' listener can still catch
+        // a signal fired by *this* rebuild's own resizing and misread it
+        // against a stale, no-longer-relevant target size.
+        for (const [window, pending] of this._pendingSizeChecks) {
+            window.disconnect(pending.sizeChangedId);
+            GLib.source_remove(pending.debounceId);
+        }
+        this._pendingSizeChecks.clear();
+
         this._windowState = new Map();
         this._trees = new Map();
+        this._rebuildInProgress = true;
 
         for (const window of global.display.list_all_windows()) {
             if (!isTileable(window)) continue;
@@ -510,7 +650,14 @@ export default class BspTileExtension extends Extension {
             // Relayout immediately -- primes lastRect on the tree's leaves so
             // the NEXT insert into this same tree gets a real orientation
             // decision instead of bspTree.js's {width:1,height:1} fallback.
+            // _rebuildInProgress keeps _layoutTree from scheduling a size
+            // check on any of these intermediate, still-growing shapes.
             this._layoutTree(tree, workspace, monitorIndex);
         }
+
+        this._rebuildInProgress = false;
+        // Every tree is in its final shape now -- one real settle-check pass
+        // per tree, instead of the many mid-rebuild ones skipped above.
+        this._relayoutAll();
     }
 }
