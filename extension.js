@@ -216,7 +216,16 @@ export default class BspTileExtension extends Extension {
                 // unwound, then finish the insert from there.
                 GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     window.change_workspace(target);
+                    // Window.activate() alone does NOT reliably switch to
+                    // the window's workspace here if it isn't already the
+                    // active one -- confirmed live, repeatedly: called by
+                    // itself (immediately, and even after an extra delay)
+                    // it silently did nothing. Workspace.activate() has to
+                    // be called explicitly first; once the target workspace
+                    // is actually active, the very same window.activate()
+                    // call focuses this window reliably, no delay needed.
                     target.activate(global.get_current_time());
+                    window.activate(global.get_current_time());
                     this._finishInsert(window, target, monitorIndex);
                     return GLib.SOURCE_REMOVE;
                 });
