@@ -5,6 +5,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import { BspTree } from './bspTree.js';
 import { FocusBorder } from './windowBorder.js';
+import { getCornerRadius, probeCornerRadius } from './cornerRadius.js';
 
 const FOCUS_BORDER_WIDTH = 2;
 const PANEL_BACKGROUND_STYLE = 'background-color: rgba(19,19,19,0.6);';
@@ -509,6 +510,14 @@ export default class BspTileExtension extends Extension {
             this._focusBorder.hide();
             return;
         }
+
+        this._focusBorder.setCornerRadius(getCornerRadius(win.get_wm_class()));
+        probeCornerRadius(win, radius => {
+            if (!this._focusBorder || global.display.get_focus_window() !== win)
+                return;
+            this._focusBorder.setCornerRadius(radius);
+            this._focusBorder.followRect(win.get_frame_rect());
+        });
 
         const update = () => {
             const isMaximized = win.maximizedHorizontally && win.maximizedVertically;
