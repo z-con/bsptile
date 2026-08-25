@@ -1,5 +1,6 @@
 import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
+import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
 
 // Fallback used until an app's real corner radius has been measured, and
@@ -36,28 +37,40 @@ export function probeCornerRadius(win, onMeasured) {
         return;
 
     _probing.add(wmClass);
-    const stream = Gio.MemoryOutputStream.new_resizable();
-    const screenshot = new Shell.Screenshot();
 
-    screenshot.screenshot_window(true, false, stream, (_source, res) => {
-        let radius = null;
-        try {
-            const [success] = screenshot.screenshot_window_finish(res);
-            stream.close(null);
-            if (success)
-                radius = measureFromBytes(stream.steal_as_bytes());
-        } catch (e) {
-            logError(e, 'bsptile: corner radius probe failed');
-        }
+    // Callers can reach here synchronously from inside Mutter's own signal
+    // dispatch for the window being probed (e.g. a first-frame handler, via
+    // the notify::focus-window chain) -- see the matching comment in
+    // extension.js's _insertWindow about workspace.activate() crashing the
+    // compositor for the same reason. screenshot_window() reenters
+    // Mutter's texture/frame code, so it must never run synchronously off
+    // such a signal; defer to the next idle so it runs after dispatch has
+    // fully unwound.
+    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        const stream = Gio.MemoryOutputStream.new_resizable();
+        const screenshot = new Shell.Screenshot();
 
-        _probing.delete(wmClass);
-        if (radius !== null) {
-            _measuredRadius.set(wmClass, radius);
-            onMeasured(radius);
-        } else {
-            // Don't keep re-probing an app that can't be measured.
-            _measuredRadius.set(wmClass, DEFAULT_CORNER_RADIUS);
-        }
+        screenshot.screenshot_window(true, false, stream, (_source, res) => {
+            let radius = null;
+            try {
+                const [success] = screenshot.screenshot_window_finish(res);
+                stream.close(null);
+                if (success)
+                    radius = measureFromBytes(stream.steal_as_bytes());
+            } catch (e) {
+                logError(e, 'bsptile: corner radius probe failed');
+            }
+
+            _probing.delete(wmClass);
+            if (radius !== null) {
+                _measuredRadius.set(wmClass, radius);
+                onMeasured(radius);
+            } else {
+                // Don't keep re-probing an app that can't be measured.
+                _measuredRadius.set(wmClass, DEFAULT_CORNER_RADIUS);
+            }
+        });
+        return GLib.SOURCE_REMOVE;
     });
 }
 
