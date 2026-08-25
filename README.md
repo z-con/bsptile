@@ -15,6 +15,9 @@ ES module) extension API, rather than a port of an older tiling extension.
   layout; closing a window returns its space to its sibling.
 - **Border-drag resizing** -- drag the shared edge between two tiled
   windows with the mouse and the split ratio updates live.
+- **Swap on drop** -- drag a tiled window and drop it on top of another
+  tiled window in the same tree and the two swap positions, instead of
+  snapping back to where the dragged one started.
 - **Configurable gaps** -- inner (between tiles) and outer (tiles to
   monitor edge), independently.
 - **Focus border** -- a thin outline around whichever window is focused,
@@ -32,6 +35,27 @@ ES module) extension API, rather than a port of an older tiling extension.
 - **Workspace/monitor migration** -- drag a tiled window to another
   workspace or monitor (or move it via keybinding) and it moves between
   trees instead of staying stuck in its original one.
+- **Per-monitor virtual workspaces** (off by default) -- give each monitor
+  its own independent, switchable set of workspaces (i3/KDE-style), instead
+  of GNOME's one workspace list shared by every monitor. Enable with:
+  `gsettings set org.gnome.shell.extensions.bsptile per-monitor-workspaces-enabled true`.
+  Once on:
+  - GNOME is pinned to a single real workspace (`install.sh` sets
+    `dynamic-workspaces false` / `num-workspaces 1`), and the extension
+    **takes over GNOME's own native workspace-switching keybindings and
+    touchpad swipe gesture** -- `Super+Page_Down`/`Page_Up`,
+    `Super+Alt+Right`/`Left`, `Ctrl+Alt+Right`/`Left`/`Up`/`Down`, the
+    `Shift`-prefixed move-window variants, and a horizontal 3-finger
+    touchpad swipe -- so the switching you already know drives this
+    per-monitor simulation instead of real (all-monitor) GNOME switching.
+    Disabling the feature restores every one of those to stock GNOME
+    behavior.
+  - A small dot row (`● ● ○ ○`) shows each monitor's own active slot: in
+    the real top panel on the primary monitor, and as a small corner
+    overlay on every other monitor (no full secondary panel exists yet).
+    The Activities button is hidden while this is on (redundant with
+    `Super+Space` and sat right next to the indicator).
+  - `virtual-workspaces-per-monitor` (default 4) sets the slot count.
 
 None of this touches floating windows you don't tile -- a window only
 enters the tree via `window-created` or `Super+T`.
@@ -86,6 +110,8 @@ gsettings set org.gnome.shell.extensions.bsptile inner-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile outer-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile tile-focused-window "['<Super>t']"
 gsettings set org.gnome.shell.extensions.bsptile resize-left "['<Control><Super>Left']"
+gsettings set org.gnome.shell.extensions.bsptile per-monitor-workspaces-enabled true
+gsettings set org.gnome.shell.extensions.bsptile virtual-workspaces-per-monitor 4
 ```
 
 (If you run these against a clone that isn't the one symlinked into
@@ -109,7 +135,30 @@ of the extension, so undo them the same way you'd change any other setting.
 - Multi-monitor is implemented -- trees are keyed per-monitor, and moving a
   tiled window to a different monitor migrates it into that monitor's tree
   -- but only code-reviewed, not physically tested on real multi-monitor
-  hardware (this machine has one monitor).
+  hardware (this machine has one monitor). Per-monitor virtual workspaces
+  inherit the same caveat, with substantially more state to get wrong:
+  monitor-unplug reflow, minimize-based parking, and monitor identity
+  tracking across a `monitors-changed` reconfigure are all unverified on
+  real hardware.
+- Per-monitor virtual workspaces simulate independence by minimizing/
+  unminimizing windows, since Mutter has no native per-monitor workspace
+  concept. If you unminimize a parked window some other way than bsptile's
+  own switch keybindings/gesture (a dock, the Overview, Alt-Tab), it's
+  treated as "make this window's slot the active one on its monitor" -- a
+  heuristic that covers the common case, not a guarantee. Real GNOME
+  workspace switching stops being meaningful for tiled windows while this
+  feature is on -- everything is pinned to the one real workspace that was
+  active when it was enabled -- which is exactly why the feature takes over
+  the switching keybindings/gesture rather than leaving them pointed at a
+  workspace list nothing else uses.
+- The touchpad swipe takeover (`gestureSwitcher.js`) reaches into GNOME
+  Shell's undocumented internals (`Main.wm._workspaceAnimation._swipeTracker`)
+  to disable the native gesture, and builds its own `SwipeTracker` instance
+  the same way GNOME's own code does. Neither of those is stable, versioned
+  extension API -- this is the piece of the extension most likely to break
+  on a future GNOME Shell upgrade. If a swipe stops doing anything after an
+  update, that's the first place to look; the keybinding takeover (stable
+  `Main.wm.addKeybinding` API) isn't affected by the same risk.
 - A deep spiral prefers redistributing new windows into whichever leaf has
   the most room once a split would drop below ~200px on its short axis, so
   tile sizes plateau instead of shrinking indefinitely -- but it's a
@@ -128,6 +177,10 @@ where a window is stuck one way or the other.
 |---|---|
 | `extension.js` | Lifecycle: window tracking, tiling, resize-drag, focus border, keybindings |
 | `bspTree.js` | The BSP tree itself -- pure logic, no GNOME dependencies |
+| `virtualWorkspace.js` | Per-monitor virtual workspace bookkeeping (minimize-based parking) |
+| `gestureSwitcher.js` | Touchpad swipe -> per-monitor virtual workspace switching |
+| `workspaceIndicator.js` | The per-monitor dot-row indicator widget |
+| `indicatorManager.js` | Creates/destroys one indicator per monitor |
 | `windowBorder.js` | The focus-border widget |
 | `metadata.json` | Extension manifest |
 | `schemas/` | gsettings schema (gaps, keybinding) |

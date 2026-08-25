@@ -46,6 +46,12 @@ export class BspTree {
         return this._leaves.has(window);
     }
 
+    // Every window currently in this tree, unordered. Used by
+    // VirtualWorkspaceManager to park/unpark a whole slot's windows at once.
+    get windows() {
+        return this._leaves.keys();
+    }
+
     insert(window, nearWindow) {
         const newLeaf = new BspNode({ window });
 
@@ -72,6 +78,22 @@ export class BspTree {
         newLeaf.parent = target;
 
         this._leaves.set(window, newLeaf);
+    }
+
+    // Exchanges which window two existing leaves hold, without touching the
+    // tree's shape or ratios at all -- used for "drag one tiled window onto
+    // another to swap their positions" instead of a real insert/remove.
+    // Returns false (no-op) if either window isn't actually a leaf here.
+    swap(windowA, windowB) {
+        const leafA = this._leaves.get(windowA);
+        const leafB = this._leaves.get(windowB);
+        if (!leafA || !leafB || leafA === leafB) return false;
+
+        leafA.window = windowB;
+        leafB.window = windowA;
+        this._leaves.set(windowA, leafB);
+        this._leaves.set(windowB, leafA);
+        return true;
     }
 
     remove(window) {

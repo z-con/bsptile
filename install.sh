@@ -122,6 +122,14 @@ echo "==> Disable GNOME's built-in Super+Left/Right half-screen tiling (fights w
 gsettings set org.gnome.mutter.keybindings toggle-tiled-left "[]"
 gsettings set org.gnome.mutter.keybindings toggle-tiled-right "[]"
 
+echo "==> Pin GNOME to a single real workspace (per-monitor-workspaces-enabled"
+echo "    replaces GNOME's own workspace switching with its own per-monitor"
+echo "    simulation -- with only one real workspace, there's nothing left for"
+echo "    GNOME's native workspace UI, Overview thumbnail strip, or switch"
+echo "    popup to show)"
+gsettings set org.gnome.mutter dynamic-workspaces false
+gsettings set org.gnome.desktop.wm.preferences num-workspaces 1
+
 echo "==> Super+Return / Shift+Super+Return / Ctrl+Super+Return: terminal, Firefox, Claude Code"
 CKB_BASE=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
 CKB_SCHEMA=org.gnome.settings-daemon.plugins.media-keys.custom-keybinding

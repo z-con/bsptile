@@ -33,5 +33,29 @@
             <default>['&lt;Control&gt;&lt;Super&gt;Down']</default>
             <summary>Move the shared divider down, keeping the opposite screen edge fixed</summary>
         </key>
+        <key name="per-monitor-workspaces-enabled" type="b">
+            <default>false</default>
+            <summary>Give each monitor its own independent, switchable set of virtual workspaces</summary>
+        </key>
+        <key name="virtual-workspaces-per-monitor" type="u">
+            <default>4</default>
+            <summary>Number of virtual workspace slots created per monitor when per-monitor-workspaces-enabled is on</summary>
+        </key>
+        <key name="virtual-workspace-next" type="as">
+            <default>['&lt;Super&gt;Page_Down', '&lt;Super&gt;KP_Next', '&lt;Super&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Alt&gt;Down']</default>
+            <summary>Switch the current monitor's active virtual workspace to the next slot (mirrors GNOME's native workspace-switch-right/down accelerators)</summary>
+        </key>
+        <key name="virtual-workspace-prev" type="as">
+            <default>['&lt;Super&gt;Page_Up', '&lt;Super&gt;KP_Prior', '&lt;Super&gt;&lt;Alt&gt;Left', '&lt;Control&gt;&lt;Alt&gt;Left', '&lt;Control&gt;&lt;Alt&gt;Up']</default>
+            <summary>Switch the current monitor's active virtual workspace to the previous slot (mirrors GNOME's native workspace-switch-left/up accelerators)</summary>
+        </key>
+        <key name="move-window-to-virtual-workspace-next" type="as">
+            <default>['&lt;Super&gt;&lt;Shift&gt;Page_Down', '&lt;Super&gt;&lt;Shift&gt;KP_Next', '&lt;Super&gt;&lt;Shift&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Shift&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Shift&gt;&lt;Alt&gt;Down']</default>
+            <summary>Move the focused tiled window to the next virtual workspace slot on its monitor (mirrors GNOME's native move-to-workspace-right/down accelerators)</summary>
+        </key>
+        <key name="move-window-to-virtual-workspace-prev" type="as">
+            <default>['&lt;Super&gt;&lt;Shift&gt;Page_Up', '&lt;Super&gt;&lt;Shift&gt;KP_Prior', '&lt;Super&gt;&lt;Shift&gt;&lt;Alt&gt;Left', '&lt;Control&gt;&lt;Shift&gt;&lt;Alt&gt;Left', '&lt;Control&gt;&lt;Shift&gt;&lt;Alt&gt;Up']</default>
+            <summary>Move the focused tiled window to the previous virtual workspace slot on its monitor (mirrors GNOME's native move-to-workspace-left/up accelerators)</summary>
+        </key>
     </schema>
 </schemalist>
