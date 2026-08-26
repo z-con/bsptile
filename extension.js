@@ -1176,9 +1176,22 @@ export default class BspTileExtension extends Extension {
 
         const rects = tree.computeRects(rect);
         for (const [window, r] of rects) {
-            if (window.minimized || window.maximizedHorizontally || window.maximizedVertically)
-                continue;
+            if (window.maximizedHorizontally || window.maximizedVertically) continue;
             if (window === this._grabbedWindow) continue;
+            if (window.minimized) {
+                // A window WE parked into an inactive vws slot still needs
+                // its geometry kept current -- otherwise it never benefits
+                // from the deferred post-monitors-changed relayout pass
+                // below (added to fix windows landing against a stale/
+                // transitional work area), since that pass iterates every
+                // tree via _relayoutAll and would otherwise skip it here
+                // forever once minimized. A window the USER minimized
+                // themselves (not us) is left alone -- resizing something
+                // they chose to hide is surprising and unnecessary since
+                // nothing is watching to correct it later anyway.
+                const state = this._windowState.get(window);
+                if (state?.hiddenByVirtualWorkspace !== true) continue;
+            }
 
             const width = Math.max(1, Math.round(r.width - inner));
             const height = Math.max(1, Math.round(r.height - inner));
@@ -1334,16 +1347,22 @@ export default class BspTileExtension extends Extension {
             tree.insert(window, null); // always spiral-fallback during a rebuild
             this._trackWindow(window, workspace, monitorIndex, vwsIndex);
 
+            // Relayout BEFORE any park() below, not after -- primes lastRect
+            // on the tree's leaves so the NEXT insert into this same tree
+            // gets a real orientation decision instead of bspTree.js's
+            // {width:1,height:1} fallback. Matches the order already used
+            // by _moveFocusedWindowToVirtualWorkspace. On its own this
+            // ordering wasn't sufficient to fix a relocated window showing
+            // short/wide after an unplug -- see _layoutTree's own comment
+            // on its minimized-window check for the other half of that fix,
+            // live-verified together 2026-08-26.
+            this._layoutTree(tree, workspace, monitorIndex);
+
             if (this._virtualWorkspaces && vwsIndex !== this._activeVwsIndex(monitorIndex)) {
                 debugLog('parking', window.get_title?.() ?? '<window>', 'on monitor', monitorIndex,
                     '-- landed in slot', vwsIndex, 'but active slot is', this._activeVwsIndex(monitorIndex));
                 this._virtualWorkspaces.park(window);
             }
-
-            // Relayout immediately -- primes lastRect on the tree's leaves so
-            // the NEXT insert into this same tree gets a real orientation
-            // decision instead of bspTree.js's {width:1,height:1} fallback.
-            this._layoutTree(tree, workspace, monitorIndex);
         }
 
         if (this._virtualWorkspaces) {
