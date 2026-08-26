@@ -50,11 +50,24 @@ export class VirtualWorkspaceManager {
 
     _connectorFor(monitorIndex) {
         try {
-            const monitors = global.backend.get_monitor_manager().get_monitors();
-            const m = monitors[monitorIndex];
+            // Confirmed live 2026-08-26: Meta.MonitorManager.get_monitors()
+            // is NOT in the same index space as window.get_monitor() /
+            // Meta.Display's monitor indexing on this machine -- get_monitors()
+            // returned eDP-1 at index 0 while Display's own index 0 (what
+            // window.get_monitor() actually returns) was geometrically the
+            // external 4K panel, with eDP-1 really sitting at Display index 1.
+            // get_logical_monitors() IS in Display's index space (verified:
+            // its primary flag and per-index geometry both lined up with
+            // Meta.Display's), so use that instead of the raw physical-
+            // monitor list for anything keyed by a window.get_monitor() value.
+            const mgr = global.backend.get_monitor_manager();
+            const logicalMonitors = mgr.get_logical_monitors();
+            const lm = logicalMonitors[monitorIndex];
+            const monitors = lm?.get_monitors?.() ?? [];
+            const m = monitors[0];
             if (m && typeof m.get_connector === 'function') return m.get_connector();
-            debugLog('connectorFor(', monitorIndex, ') -- no usable Meta.Monitor at that index',
-                '(monitors.length=', monitors.length, ') -- falling back to synthetic identity');
+            debugLog('connectorFor(', monitorIndex, ') -- no usable Meta.Monitor for that logical monitor',
+                '(logicalMonitors.length=', logicalMonitors.length, ') -- falling back to synthetic identity');
         } catch (e) {
             debugLog('connectorFor(', monitorIndex, ') -- get_connector() threw:', String(e),
                 '-- falling back to synthetic identity');
@@ -98,6 +111,8 @@ export class VirtualWorkspaceManager {
     growCapacity(monitorIndex) {
         const state = this._stateFor(monitorIndex);
         state.count += 1;
+        debugLog('growCapacity(monitor', monitorIndex, ') -- new count', state.count,
+            ', new slot index', state.count - 1);
         this._onActiveChanged?.(monitorIndex, state.activeIndex);
         return state.count - 1;
     }
@@ -139,6 +154,8 @@ export class VirtualWorkspaceManager {
         state.count -= 1;
         if (state.activeIndex > vwsIndex) state.activeIndex -= 1;
 
+        debugLog('maybeDiscardSlot(monitor', monitorIndex, ', slot', vwsIndex, ') -- discarded an empty slot;',
+            'every slot above it shifts down by 1; new count', state.count, ', new active', state.activeIndex);
         this._onSlotDiscarded?.(monitorIndex, vwsIndex);
         // Discarding the highest slot can leave the active slot -- if it
         // has a window -- as the new last slot with no reserve past it
@@ -263,18 +280,34 @@ export class VirtualWorkspaceManager {
     }
 
     park(win) {
-        if (win.minimized) return;
+        const title = win.get_title?.() ?? '<window>';
+        // Always mark it hidden-by-us, even if it's already minimized (e.g.
+        // extension.js re-parking a window it just rescued from being
+        // dropped by a rebuild) -- otherwise a freshly-_trackWindow'd state
+        // record defaults hiddenByVirtualWorkspace to false and a later real
+        // unminimize won't be recognized as "promote this slot" (see
+        // extension.js's _onMinimizedChanged).
         this._markHidden(win, true);
+        if (win.minimized) {
+            debugLog('park(', title, ') -- already minimized, bookkeeping (re)confirmed, no minimize() call needed');
+            return;
+        }
         win.minimize();
+        debugLog('park(', title, ') -- minimized, now win.minimized =', win.minimized);
     }
 
     unpark(win) {
-        if (!win.minimized) return;
+        const title = win.get_title?.() ?? '<window>';
+        if (!win.minimized) {
+            debugLog('unpark(', title, ') -- not minimized, no-op');
+            return;
+        }
         // Clear the flag *before* unminimizing so extension.js's
         // notify::minimized listener sees hiddenByVirtualWorkspace already
         // false and knows this transition was caused by us, not the user.
         this._markHidden(win, false);
         win.unminimize();
+        debugLog('unpark(', title, ') -- unminimized, now win.minimized =', win.minimized);
     }
 
     destroy() {

@@ -87,6 +87,7 @@ export default class BspTileExtension extends Extension {
         this._grabbedWindow = null;     // window currently being live-dragged; skip it in _layoutTree
         this._activeGrab = null;        // { window, sizeChangedId } while a resize grab is in progress
         this._grabInProgressWindow = null; // any window currently under ANY live grab (move or resize) -- see _checkWindowMigration
+        this._suppressMigrationChecks = false; // see monitors-changed handler and _checkWindowMigration
         this._panelStyleTimeoutId = null;
 
         // Per-monitor virtual workspaces (see virtualWorkspace.js): null
@@ -373,15 +374,37 @@ export default class BspTileExtension extends Extension {
         conn(global.workspaceManager, 'active-workspace-changed', () => this._relayoutAll());
         conn(global.workspaceManager, 'workspace-removed', () => this._rebuildAllTrees());
         conn(Main.layoutManager, 'monitors-changed', () => {
-            const monitors = global.backend.get_monitor_manager().get_monitors();
-            debugLog('monitors-changed fired;', monitors.length, 'monitor(s):',
-                monitors.map((m, i) => {
+            // Logged by LOGICAL monitor index (the same index space
+            // window.get_monitor() uses), not MonitorManager's raw physical-
+            // monitor list order -- those two are NOT guaranteed to agree
+            // (confirmed live 2026-08-26 they were flatly swapped on this
+            // machine), so logging the raw list here would misrepresent
+            // what index N actually means for every other log line below.
+            const logicalMonitors = global.backend.get_monitor_manager().get_logical_monitors();
+            debugLog('monitors-changed fired;', logicalMonitors.length, 'monitor(s):',
+                logicalMonitors.map((lm, i) => {
                     try {
-                        return `${i}=${m.get_connector()}`;
+                        return `${i}=${lm.get_monitors()[0].get_connector()}`;
                     } catch (e) {
                         return `${i}=<get_connector threw: ${e}>`;
                     }
                 }).join(', '));
+
+            // A monitor reconfigure fires 'position-changed' on windows that
+            // never actually moved (work areas/struts recalculate system-
+            // wide) -- confirmed live 2026-08-26: a window sitting untouched
+            // on the laptop's active slot got yanked onto the external
+            // monitor's tree mid-plug with no user action at all.
+            // _checkWindowMigration reacts to that signal using a raw
+            // monitor-index comparison with no defense against exactly this
+            // (unlike _rebuildAllTrees below, which already learned not to
+            // trust a bare index/connector blip as a real relocation).
+            // _rebuildAllTrees is about to comprehensively re-derive every
+            // window's correct tree from scratch anyway, so there's nothing
+            // for the reactive per-window path to usefully do here --
+            // suppress it for the duration of the reconfigure and let it
+            // resume once things have actually settled.
+            this._suppressMigrationChecks = true;
 
             try {
                 this._rebuildAllTrees();
@@ -404,6 +427,8 @@ export default class BspTileExtension extends Extension {
                     this._relayoutAll();
                 } catch (e) {
                     logError(e, '[bsptile-monitor] exception in deferred relayout after monitors-changed');
+                } finally {
+                    this._suppressMigrationChecks = false;
                 }
                 return GLib.SOURCE_REMOVE;
             });
@@ -430,15 +455,37 @@ export default class BspTileExtension extends Extension {
             // re-check: app may have become a dialog/minimized by now
             if (!isTileableBase(window)) return;
 
-            const opensCoveringScreen = window.is_fullscreen() ||
-                window.maximizedHorizontally || window.maximizedVertically;
-            if (opensCoveringScreen) {
-                if (this._settings.get_boolean('deny-fullscreen-on-open'))
-                    this._forceIntoTiling(window);
-                return;
-            }
+            // Confirmed live 2026-08-26: window.get_monitor() can still
+            // report the WRONG monitor right at 'first-frame' for a window
+            // that opened on a just-plugged-in external display -- Mutter
+            // hadn't finished associating it with its actual monitor yet.
+            // The window renders in the right place; only the *query*
+            // lagged. Same class of "queried before it settled" race as the
+            // work-area recalculation elsewhere in this file -- defer one
+            // more main-loop tick so the answer matches reality before
+            // anything downstream (tiling, vws tracking) bakes in the wrong
+            // monitor.
+            const immediateMonitor = window.get_monitor();
+            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                if (!isTileableBase(window)) return GLib.SOURCE_REMOVE; // closed/changed during the deferred tick
+                const settledMonitor = window.get_monitor();
+                if (settledMonitor !== immediateMonitor) {
+                    debugLog('_onWindowCreated:', window.get_title?.() ?? '<window>',
+                        '-- get_monitor() at first-frame was', immediateMonitor,
+                        'but settled to', settledMonitor, 'one tick later (this is the race being worked around)');
+                }
 
-            this._insertWindow(window);
+                const opensCoveringScreen = window.is_fullscreen() ||
+                    window.maximizedHorizontally || window.maximizedVertically;
+                if (opensCoveringScreen) {
+                    if (this._settings.get_boolean('deny-fullscreen-on-open'))
+                        this._forceIntoTiling(window);
+                    return GLib.SOURCE_REMOVE;
+                }
+
+                this._insertWindow(window);
+                return GLib.SOURCE_REMOVE;
+            });
         });
     }
 
@@ -658,11 +705,16 @@ export default class BspTileExtension extends Extension {
         if (this._virtualWorkspaces)
             signalIds.push(window.connect('notify::minimized', () => this._onMinimizedChanged(window)));
 
+        const monitorConnector = this._virtualWorkspaces?.connectorFor(monitorIndex) ?? null;
+        debugLog('_trackWindow(', window.get_title?.() ?? '<window>', ') -- monitor', monitorIndex,
+            'connector', monitorConnector, 'vws slot', vwsIndex,
+            '(this._virtualWorkspaces is', this._virtualWorkspaces ? 'live' : 'NULL -- monitorConnector will stick as null', ')');
+
         this._windowState.set(window, {
             signalIds,
             workspace,
             monitorIndex,
-            monitorConnector: this._virtualWorkspaces?.connectorFor(monitorIndex) ?? null,
+            monitorConnector,
             virtualWorkspaceIndex: vwsIndex,
             hiddenByVirtualWorkspace: false,
         });
@@ -685,7 +737,17 @@ export default class BspTileExtension extends Extension {
     _onMinimizedChanged(window) {
         if (window.minimized) return; // becoming minimized isn't the interesting transition here
         const state = this._windowState.get(window);
-        if (!state || !state.hiddenByVirtualWorkspace) return;
+        if (!state) {
+            debugLog('_onMinimizedChanged: untracked window', window.get_title?.() ?? '<window>', 'unminimized -- ignoring');
+            return;
+        }
+        if (!state.hiddenByVirtualWorkspace) {
+            debugLog('_onMinimizedChanged:', window.get_title?.() ?? '<window>', 'unminimized but hiddenByVirtualWorkspace',
+                'was already false -- NOT promoting (this is the "someone else unminimized it and we lost track" case)');
+            return;
+        }
+        debugLog('_onMinimizedChanged:', window.get_title?.() ?? '<window>', 'unminimized -- promoting monitor',
+            state.monitorIndex, 'to slot', state.virtualWorkspaceIndex);
         state.hiddenByVirtualWorkspace = false;
         this._virtualWorkspaces?.promoteSlot(state.monitorIndex, state.virtualWorkspaceIndex, window);
     }
@@ -714,6 +776,17 @@ export default class BspTileExtension extends Extension {
         // mouse. Applying the whole migration atomically once, after the
         // drag genuinely ends, avoids that jitter.
         if (window === this._grabInProgressWindow) return;
+
+        // See the monitors-changed handler: a reconfigure fires
+        // position-changed on windows that never actually moved, and this
+        // function has no connector-based defense against mistaking that
+        // for a real cross-monitor migration. _rebuildAllTrees is already
+        // handling every window comprehensively during that window, so skip.
+        if (this._suppressMigrationChecks) {
+            debugLog('_checkWindowMigration: suppressed for', window.get_title?.() ?? '<window>',
+                '(a monitors-changed reconfigure is in progress)');
+            return;
+        }
 
         const state = this._windowState.get(window);
         if (!state) return;
@@ -1163,13 +1236,27 @@ export default class BspTileExtension extends Extension {
         // dropped out of the current monitor list.
         const currentConnectors = new Set();
         if (this._virtualWorkspaces) {
-            const monitorCount = global.backend.get_monitor_manager().get_monitors().length;
+            // Logical-monitor count, not the raw physical-monitor list's
+            // length -- see connectorFor's own comment for why those can
+            // differ (in principle; typically equal 1:1 absent mirroring).
+            const monitorCount = global.backend.get_monitor_manager().get_logical_monitors().length;
             for (let m = 0; m < monitorCount; m++)
                 currentConnectors.add(this._virtualWorkspaces.connectorFor(m));
         }
 
         for (const window of global.display.list_all_windows()) {
-            if (!isTileable(window)) continue;
+            // isTileableBase (inside isTileable) excludes minimized windows --
+            // correct for a window the USER minimized, but a window WE
+            // minimized to park it in an inactive vws slot is still fully
+            // "ours" and must survive a rebuild. Without this exception it
+            // silently drops out of _windowState/_trees entirely on the next
+            // monitors-changed (of which there can be several in a row during
+            // a flaky hotplug, confirmed live 2026-08-26) -- permanently
+            // minimized, its slot then swept up as "empty" by reconcileMonitor
+            // right after, with no signal handlers left to ever recover it.
+            const oldForAdmission = previousState.get(window);
+            const wasParkedByUs = this._virtualWorkspaces && oldForAdmission?.hiddenByVirtualWorkspace === true;
+            if (!wasParkedByUs && !isTileable(window)) continue;
 
             const workspace = this._effectiveWorkspace(window);
             const monitorIndex = window.get_monitor();
@@ -1227,6 +1314,19 @@ export default class BspTileExtension extends Extension {
                         byOld.set(oldKey, newSlot);
                     }
                     vwsIndex = newSlot;
+                } else if (wasParkedByUs && old) {
+                    // Not relocated (same monitor as before), but this window
+                    // was deliberately parked in a specific NON-active slot --
+                    // the default `vwsIndex = this._activeVwsIndex(monitorIndex)`
+                    // above is only correct for a window that was actually
+                    // visible (whose slot, being visible, must already BE the
+                    // active one). Collapsing a parked window onto the active
+                    // slot here would silently un-park it into whatever's
+                    // currently showing. Preserve its real slot instead.
+                    debugLog('preserving parked slot for', window.get_title?.() ?? '<window>',
+                        '-- staying in slot', old.virtualWorkspaceIndex, 'on', old.monitorConnector,
+                        'rather than collapsing onto the active slot', vwsIndex);
+                    vwsIndex = old.virtualWorkspaceIndex;
                 }
             }
 
@@ -1247,7 +1347,7 @@ export default class BspTileExtension extends Extension {
         }
 
         if (this._virtualWorkspaces) {
-            const monitorCount = global.backend.get_monitor_manager().get_monitors().length;
+            const monitorCount = global.backend.get_monitor_manager().get_logical_monitors().length;
             for (let m = 0; m < monitorCount; m++)
                 this._virtualWorkspaces.reconcileMonitor(m);
         }
