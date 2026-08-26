@@ -7,11 +7,23 @@ import Shell from 'gi://Shell';
 // for apps where measurement fails (e.g. no CSD alpha, screenshot error).
 export const DEFAULT_CORNER_RADIUS = 12;
 
+// Hand-tuned overrides for apps where the alpha-based probe below measures
+// badly. Ghostty draws its background at less-than-full alpha (terminal
+// transparency) and sits behind blur-my-shell's own backdrop actor, both of
+// which corrupt the plateau/threshold logic in measureFromBytes -- probing
+// it landed on ~9px against a real on-screen radius of 24px (confirmed by
+// screenshotting the live border against the window and tuning until the
+// gap between them closed). Skip the probe for these and use the known-good
+// value instead.
+const KNOWN_RADII = {
+    'com.mitchellh.ghostty': 24,
+};
+
 const _measuredRadius = new Map(); // wm_class -> px
 const _probing = new Set();        // wm_class currently being measured
 
 export function getCornerRadius(wmClass) {
-    return _measuredRadius.get(wmClass) ?? DEFAULT_CORNER_RADIUS;
+    return KNOWN_RADII[wmClass] ?? _measuredRadius.get(wmClass) ?? DEFAULT_CORNER_RADIUS;
 }
 
 // CSD corner rounding is baked into the client's own buffer as alpha
@@ -33,7 +45,7 @@ export function getCornerRadius(wmClass) {
 // write straight into memory instead of a temp file on disk.
 export function probeCornerRadius(win, onMeasured) {
     const wmClass = win.get_wm_class();
-    if (!wmClass || _measuredRadius.has(wmClass) || _probing.has(wmClass))
+    if (!wmClass || wmClass in KNOWN_RADII || _measuredRadius.has(wmClass) || _probing.has(wmClass))
         return;
 
     _probing.add(wmClass);
