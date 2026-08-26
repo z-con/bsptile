@@ -49,15 +49,23 @@ function resizeSidesFromGrabOp(grabOp) {
     return { horizontal, vertical };
 }
 
-function isTileable(window) {
+// Checks that hold regardless of the window's current size state (dialog,
+// transient, minimized, ...) -- these windows are never candidates for
+// tiling no matter what _forceIntoTiling does to their fullscreen/maximized
+// flags.
+function isTileableBase(window) {
     if (!window) return false;
     if (window.windowType !== Meta.WindowType.NORMAL) return false;
     if (window.get_transient_for() !== null) return false;
     if (window.is_attached_dialog()) return false;
     if (window.minimized) return false;
-    if (window.maximizedHorizontally || window.maximizedVertically) return false;
-    if (window.is_fullscreen()) return false;
     return true;
+}
+
+function isTileable(window) {
+    return isTileableBase(window) &&
+        !window.maximizedHorizontally && !window.maximizedVertically &&
+        !window.is_fullscreen();
 }
 
 export default class BspTileExtension extends Extension {
@@ -371,16 +379,56 @@ export default class BspTileExtension extends Extension {
     }
 
     _onWindowCreated(window) {
-        if (!isTileable(window)) return; // cheap pre-check; state may still change before first-frame
+        if (!isTileableBase(window)) return; // cheap pre-check; size state may still change before first-frame
 
         const actor = window.get_compositor_private();
         if (!actor) return;
 
         const firstFrameId = actor.connect('first-frame', () => {
             actor.disconnect(firstFrameId);
-            if (!isTileable(window)) return; // re-check: app may have maximized/minimized itself by now
+            // re-check: app may have become a dialog/minimized by now
+            if (!isTileableBase(window)) return;
+
+            const opensCoveringScreen = window.is_fullscreen() ||
+                window.maximizedHorizontally || window.maximizedVertically;
+            if (opensCoveringScreen) {
+                if (this._settings.get_boolean('deny-fullscreen-on-open'))
+                    this._forceIntoTiling(window);
+                return;
+            }
+
             this._insertWindow(window);
         });
+    }
+
+    // Strips fullscreen/maximize off a window that opened covering the
+    // whole screen, one geometry change at a time, until it's actually
+    // tileable. Some apps' fullscreen sits on top of an underlying
+    // maximized restore state, so unmake_fullscreen() alone can land on
+    // maximized instead of normal -- keep peeling until isTileable is
+    // satisfied. Each step is async (Wayland clients settle geometry over a
+    // compositor round-trip, same as the size-changed wait
+    // _tileFocusedWindow uses for a manual Super+T unmaximize), so this
+    // recurses off 'size-changed' rather than doing it all synchronously.
+    _forceIntoTiling(window) {
+        if (window.is_fullscreen()) {
+            const id = window.connect('size-changed', () => {
+                window.disconnect(id);
+                this._forceIntoTiling(window);
+            });
+            window.unmake_fullscreen();
+            return;
+        }
+        if (window.maximizedHorizontally || window.maximizedVertically) {
+            const id = window.connect('size-changed', () => {
+                window.disconnect(id);
+                this._forceIntoTiling(window);
+            });
+            window.unmaximize();
+            return;
+        }
+        if (!isTileable(window)) return; // e.g. closed/minimized itself mid-flight
+        this._insertWindow(window);
     }
 
     // The workspace a window's tree membership is keyed under. With
@@ -831,7 +879,7 @@ export default class BspTileExtension extends Extension {
                 win.disconnect(id);
                 insertNow();
             });
-            win.unmaximize(Meta.MaximizeFlags.BOTH);
+            win.unmaximize();
         } else {
             insertNow();
         }

@@ -23,6 +23,11 @@ ES module) extension API, rather than a port of an older tiling extension.
 - **Focus border** -- a thin outline around whichever window is focused,
   using your GNOME accent color.
 - **Slightly transparent top panel.**
+- **Deny fullscreen/maximize on open** (on by default) -- if a newly-opened
+  window comes up fullscreen or maximized (covering the whole screen
+  unmanaged, which is what several apps do by default, e.g. GNOME Settings),
+  it's forced out of that state and tiled into the layout instead. Disable
+  with: `gsettings set org.gnome.shell.extensions.bsptile deny-fullscreen-on-open false`.
 - **`Super+T`** -- pull the focused window into the tiled layout, even if
   it's currently maximized (unmaximizes it first).
 - **`Super+Shift+T`** -- untile the focused window, leaving it floating
@@ -120,6 +125,7 @@ gsettings set org.gnome.shell.extensions.bsptile outer-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile tile-focused-window "['<Super>t']"
 gsettings set org.gnome.shell.extensions.bsptile resize-left "['<Control><Super>Left']"
 gsettings set org.gnome.shell.extensions.bsptile per-monitor-workspaces-enabled true
+gsettings set org.gnome.shell.extensions.bsptile deny-fullscreen-on-open false
 ```
 
 (If you run these against a clone that isn't the one symlinked into

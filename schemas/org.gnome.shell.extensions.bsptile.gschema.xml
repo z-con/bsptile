@@ -37,6 +37,10 @@
             <default>false</default>
             <summary>Give each monitor its own independent, switchable set of virtual workspaces</summary>
         </key>
+        <key name="deny-fullscreen-on-open" type="b">
+            <default>true</default>
+            <summary>Force a newly-created window that opens fullscreen or maximized back into the tiled layout instead of covering the whole screen unmanaged</summary>
+        </key>
         <key name="virtual-workspace-next" type="as">
             <default>['&lt;Super&gt;Page_Down', '&lt;Super&gt;KP_Next', '&lt;Super&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Alt&gt;Right', '&lt;Control&gt;&lt;Alt&gt;Down']</default>
             <summary>Switch the current monitor's active virtual workspace to the next slot (mirrors GNOME's native workspace-switch-right/down accelerators)</summary>
