@@ -40,6 +40,13 @@ ES module) extension API, rather than a port of an older tiling extension.
   of GNOME's one workspace list shared by every monitor. Enable with:
   `gsettings set org.gnome.shell.extensions.bsptile per-monitor-workspaces-enabled true`.
   Once on:
+  - Each monitor starts with a single empty slot. Slots grow and shrink
+    dynamically to match GNOME's own `dynamic-workspaces` behavior, just
+    per monitor instead of shared across all of them: as soon as a slot
+    gets a window, a fresh empty slot appears past it so there's always
+    somewhere new to switch into, and any empty slot that isn't the one
+    you're currently looking at gets silently discarded (with the rest
+    renumbered), so idle slots never pile up.
   - GNOME is pinned to a single real workspace (`install.sh` sets
     `dynamic-workspaces false` / `num-workspaces 1`), and the extension
     **takes over GNOME's own native workspace-switching keybindings and
@@ -49,13 +56,15 @@ ES module) extension API, rather than a port of an older tiling extension.
     touchpad swipe -- so the switching you already know drives this
     per-monitor simulation instead of real (all-monitor) GNOME switching.
     Disabling the feature restores every one of those to stock GNOME
-    behavior.
+    behavior. A 5-button mouse's side buttons (button 8/"back", button
+    9/"forward") do the same, captured stage-wide -- this takes those
+    buttons away from per-app back/forward navigation (e.g. a browser)
+    while the feature is on.
   - A small dot row (`● ● ○ ○`) shows each monitor's own active slot: in
     the real top panel on the primary monitor, and as a small corner
     overlay on every other monitor (no full secondary panel exists yet).
     The Activities button is hidden while this is on (redundant with
     `Super+Space` and sat right next to the indicator).
-  - `virtual-workspaces-per-monitor` (default 4) sets the slot count.
 
 None of this touches floating windows you don't tile -- a window only
 enters the tree via `window-created` or `Super+T`.
@@ -111,7 +120,6 @@ gsettings set org.gnome.shell.extensions.bsptile outer-gaps 8
 gsettings set org.gnome.shell.extensions.bsptile tile-focused-window "['<Super>t']"
 gsettings set org.gnome.shell.extensions.bsptile resize-left "['<Control><Super>Left']"
 gsettings set org.gnome.shell.extensions.bsptile per-monitor-workspaces-enabled true
-gsettings set org.gnome.shell.extensions.bsptile virtual-workspaces-per-monitor 4
 ```
 
 (If you run these against a clone that isn't the one symlinked into
@@ -151,6 +159,13 @@ of the extension, so undo them the same way you'd change any other setting.
   active when it was enabled -- which is exactly why the feature takes over
   the switching keybindings/gesture rather than leaving them pointed at a
   workspace list nothing else uses.
+- Virtual workspace slots grow/shrink dynamically, discarding empty
+  non-active slots and renumbering the rest to stay contiguous. This
+  renumbering has to keep the tiling trees, per-window slot bookkeeping,
+  and the indicator all in lockstep -- code-reviewed and exercised live on
+  a single-monitor setup, but the cross-monitor discard/renumber paths
+  (e.g. a window dragged to another monitor emptying its old slot) are
+  unverified on real multi-monitor hardware.
 - The touchpad swipe takeover (`gestureSwitcher.js`) reaches into GNOME
   Shell's undocumented internals (`Main.wm._workspaceAnimation._swipeTracker`)
   to disable the native gesture, and builds its own `SwipeTracker` instance
@@ -179,6 +194,7 @@ where a window is stuck one way or the other.
 | `bspTree.js` | The BSP tree itself -- pure logic, no GNOME dependencies |
 | `virtualWorkspace.js` | Per-monitor virtual workspace bookkeeping (minimize-based parking) |
 | `gestureSwitcher.js` | Touchpad swipe -> per-monitor virtual workspace switching |
+| `mouseButtonSwitcher.js` | Mouse side buttons (8/9) -> per-monitor virtual workspace switching |
 | `workspaceIndicator.js` | The per-monitor dot-row indicator widget |
 | `indicatorManager.js` | Creates/destroys one indicator per monitor |
 | `windowBorder.js` | The focus-border widget |

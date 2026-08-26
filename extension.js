@@ -9,6 +9,7 @@ import { FocusBorder } from './windowBorder.js';
 import { getCornerRadius, probeCornerRadius } from './cornerRadius.js';
 import { VirtualWorkspaceManager } from './virtualWorkspace.js';
 import { GestureSwitcher } from './gestureSwitcher.js';
+import { MouseButtonSwitcher } from './mouseButtonSwitcher.js';
 import { IndicatorManager } from './indicatorManager.js';
 
 const FOCUS_BORDER_WIDTH = 2;
@@ -78,6 +79,7 @@ export default class BspTileExtension extends Extension {
         this._virtualWorkspaces = null;
         this._pinnedWorkspace = null;
         this._gestureSwitcher = null;
+        this._mouseButtonSwitcher = null;
         this._indicatorManager = null;
         this._wmKeybindingsSettings = null;
         this._savedNativeKeybindings = null;
@@ -153,6 +155,7 @@ export default class BspTileExtension extends Extension {
             const overviewHiddenId = Main.overview.connect('hidden', () => {
                 GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     Main.panel.set_style(PANEL_BACKGROUND_STYLE);
+                    this._reassertNativeSwipeTrackerDisabled();
                     return GLib.SOURCE_REMOVE;
                 });
             });
@@ -213,7 +216,6 @@ export default class BspTileExtension extends Extension {
     _enableVirtualWorkspaces() {
         this._pinnedWorkspace = global.workspaceManager.get_active_workspace();
         this._virtualWorkspaces = new VirtualWorkspaceManager({
-            workspacesPerMonitor: this._settings.get_uint('virtual-workspaces-per-monitor'),
             getWindowsInSlot: (monitorIndex, vwsIndex) => {
                 const tree = this._treeFor(this._pinnedWorkspace, monitorIndex, vwsIndex, false);
                 return tree ? [...tree.windows] : [];
@@ -223,6 +225,8 @@ export default class BspTileExtension extends Extension {
                 if (state) state.hiddenByVirtualWorkspace = hidden;
             },
             onActiveChanged: (monitorIndex) => this._indicatorManager?.update(monitorIndex),
+            onSlotDiscarded: (monitorIndex, discardedIndex) =>
+                this._onVwsSlotDiscarded(monitorIndex, discardedIndex),
         });
 
         Main.wm.addKeybinding('virtual-workspace-next', this._settings, Meta.KeyBindingFlags.NONE,
@@ -256,6 +260,7 @@ export default class BspTileExtension extends Extension {
             nativeSwipeTracker.enabled = false;
         }
         this._gestureSwitcher = new GestureSwitcher(this._virtualWorkspaces);
+        this._mouseButtonSwitcher = new MouseButtonSwitcher(this._virtualWorkspaces);
 
         this._indicatorManager = new IndicatorManager(this._virtualWorkspaces, PANEL_BACKGROUND_STYLE);
 
@@ -285,6 +290,22 @@ export default class BspTileExtension extends Extension {
         }
     }
 
+    // GNOME's own WorkspaceAnimationController silently flips its native
+    // swipe tracker's `enabled` back to true well after we disabled it in
+    // _enableVirtualWorkspaces() -- confirmed live on two separate
+    // triggers, a monitors-changed reconfigure and, more disruptively
+    // since it happens constantly in normal use, just closing the Overview
+    // (Super+Space, a hot corner) -- with no recreation of the tracker
+    // object itself, just the flag flipping back. Left alone, the native
+    // and GestureSwitcher trackers both fire on the next touchpad swipe,
+    // fighting each other. A no-op while vws is off.
+    _reassertNativeSwipeTrackerDisabled() {
+        if (!this._virtualWorkspaces) return;
+        const nativeSwipeTracker = Main.wm._workspaceAnimation?._swipeTracker;
+        if (nativeSwipeTracker)
+            nativeSwipeTracker.enabled = false;
+    }
+
     _disableVirtualWorkspaces() {
         if (!this._virtualWorkspaces) return;
 
@@ -298,6 +319,9 @@ export default class BspTileExtension extends Extension {
 
         this._gestureSwitcher?.destroy();
         this._gestureSwitcher = null;
+
+        this._mouseButtonSwitcher?.destroy();
+        this._mouseButtonSwitcher = null;
 
         const nativeSwipeTracker = Main.wm._workspaceAnimation?._swipeTracker;
         if (nativeSwipeTracker && this._nativeSwipeTrackerWasEnabled !== undefined)
@@ -333,6 +357,7 @@ export default class BspTileExtension extends Extension {
         conn(Main.layoutManager, 'monitors-changed', () => {
             this._rebuildAllTrees();
             this._indicatorManager?.rebuild();
+            this._reassertNativeSwipeTrackerDisabled();
         });
         conn(this._settings, 'changed::inner-gaps', () => this._relayoutAll());
         conn(this._settings, 'changed::outer-gaps', () => this._relayoutAll());
@@ -342,11 +367,6 @@ export default class BspTileExtension extends Extension {
             else
                 this._disableVirtualWorkspaces();
             this._rebuildAllTrees();
-        });
-        conn(this._settings, 'changed::virtual-workspaces-per-monitor', () => {
-            this._virtualWorkspaces?.setDefaultWorkspacesPerMonitor(
-                this._settings.get_uint('virtual-workspaces-per-monitor')
-            );
         });
     }
 
@@ -374,6 +394,29 @@ export default class BspTileExtension extends Extension {
 
     _activeVwsIndex(monitorIndex) {
         return this._virtualWorkspaces ? this._virtualWorkspaces.activeIndexFor(monitorIndex) : 0;
+    }
+
+    // Keeps _trees and _windowState in lockstep with a discard that already
+    // happened inside VirtualWorkspaceManager -- fired synchronously from
+    // there (see onSlotDiscarded) before anything else can observe the new,
+    // renumbered indices. Only ever needs to touch _pinnedWorkspace's slice
+    // of _trees: vws pins every tracked window to that one real workspace
+    // for as long as the feature is on (see _effectiveWorkspace above), so
+    // it's the only workspace key with vws-managed slots under it.
+    _onVwsSlotDiscarded(monitorIndex, discardedIndex) {
+        const byVws = this._trees.get(this._pinnedWorkspace)?.get(monitorIndex);
+        if (byVws) {
+            byVws.delete(discardedIndex); // guaranteed empty by the caller
+            const shifted = new Map();
+            for (const [i, tree] of byVws)
+                shifted.set(i > discardedIndex ? i - 1 : i, tree);
+            this._trees.get(this._pinnedWorkspace).set(monitorIndex, shifted);
+        }
+
+        for (const state of this._windowState.values()) {
+            if (state.monitorIndex === monitorIndex && state.virtualWorkspaceIndex > discardedIndex)
+                state.virtualWorkspaceIndex -= 1;
+        }
     }
 
     _insertWindow(window) {
@@ -476,6 +519,7 @@ export default class BspTileExtension extends Extension {
         tree.insert(window, nearWindow);
         this._trackWindow(window, workspace, monitorIndex, vwsIndex);
         this._layoutTree(tree, workspace, monitorIndex);
+        this._virtualWorkspaces?.ensureTrailingSlot(monitorIndex);
     }
 
     // Looks for somewhere with room for one more compliant split when
@@ -529,6 +573,7 @@ export default class BspTileExtension extends Extension {
             signalIds,
             workspace,
             monitorIndex,
+            monitorConnector: this._virtualWorkspaces?.connectorFor(monitorIndex) ?? null,
             virtualWorkspaceIndex: vwsIndex,
             hiddenByVirtualWorkspace: false,
         });
@@ -567,6 +612,7 @@ export default class BspTileExtension extends Extension {
         if (!tree) return;
         tree.remove(window);
         this._layoutTree(tree, state.workspace, state.monitorIndex);
+        this._virtualWorkspaces?.maybeDiscardSlot(state.monitorIndex, state.virtualWorkspaceIndex);
     }
 
     _checkWindowMigration(window) {
@@ -592,6 +638,7 @@ export default class BspTileExtension extends Extension {
         if (oldTree) {
             oldTree.remove(window);
             this._layoutTree(oldTree, state.workspace, state.monitorIndex);
+            this._virtualWorkspaces?.maybeDiscardSlot(state.monitorIndex, state.virtualWorkspaceIndex);
         }
 
         if (!newWorkspace) {
@@ -618,6 +665,7 @@ export default class BspTileExtension extends Extension {
         if (nearWindow === window) nearWindow = null;
         newTree.insert(window, nearWindow);
         this._layoutTree(newTree, newWorkspace, newMonitor);
+        this._virtualWorkspaces?.ensureTrailingSlot(newMonitor);
     }
 
     _onGrabBegin(window, grabOp) {
@@ -858,19 +906,27 @@ export default class BspTileExtension extends Extension {
 
         const monitorIndex = state.monitorIndex;
         const count = this._virtualWorkspaces.countFor(monitorIndex);
-        const targetIndex = ((state.virtualWorkspaceIndex + direction) % count + count) % count;
+        let targetIndex = ((state.virtualWorkspaceIndex + direction) % count + count) % count;
         if (targetIndex === state.virtualWorkspaceIndex) return;
 
-        const oldTree = this._treeFor(state.workspace, monitorIndex, state.virtualWorkspaceIndex, false);
+        const oldIndex = state.virtualWorkspaceIndex;
+        const oldTree = this._treeFor(state.workspace, monitorIndex, oldIndex, false);
         if (oldTree) {
             oldTree.remove(win);
             this._layoutTree(oldTree, state.workspace, monitorIndex);
+            // Discarding the vacated slot renumbers every slot above it --
+            // including targetIndex itself, computed above against the
+            // pre-discard count -- so correct for that shift before using
+            // it below.
+            if (this._virtualWorkspaces.maybeDiscardSlot(monitorIndex, oldIndex) && targetIndex > oldIndex)
+                targetIndex -= 1;
         }
 
         state.virtualWorkspaceIndex = targetIndex;
         const newTree = this._treeFor(state.workspace, monitorIndex, targetIndex, true);
         newTree.insert(win, null);
         this._layoutTree(newTree, state.workspace, monitorIndex);
+        this._virtualWorkspaces.ensureTrailingSlot(monitorIndex);
 
         // The window followed to its new slot -- park it if that slot isn't
         // the monitor's active one, matching how every other window in an
@@ -1014,13 +1070,24 @@ export default class BspTileExtension extends Extension {
 
             if (this._virtualWorkspaces) {
                 const old = previousState.get(window);
-                if (old && old.monitorIndex !== monitorIndex) {
+                // Compare physical monitor identity (connector), not raw
+                // index -- a monitors-changed reconfigure can reassign
+                // indices (e.g. primary swaps, or one monitor's slot shifts
+                // down when another disconnects) even for a window whose
+                // physical monitor never changed. Only treat this as a real
+                // relocation -- and give it a fresh trailing slot -- when
+                // the connector itself differs (its old monitor is gone or
+                // it's genuinely on a new one); otherwise let it fall
+                // through to the current monitor's active slot below, same
+                // as any other untouched window.
+                const newConnector = this._virtualWorkspaces.connectorFor(monitorIndex);
+                if (old && old.monitorConnector !== null && old.monitorConnector !== newConnector) {
                     let byOld = reflowSlots.get(monitorIndex);
                     if (!byOld) {
                         byOld = new Map();
                         reflowSlots.set(monitorIndex, byOld);
                     }
-                    const oldKey = `${old.monitorIndex}:${old.virtualWorkspaceIndex}`;
+                    const oldKey = `${old.monitorConnector}:${old.virtualWorkspaceIndex}`;
                     let newSlot = byOld.get(oldKey);
                     if (newSlot === undefined) {
                         newSlot = this._virtualWorkspaces.growCapacity(monitorIndex);
@@ -1041,6 +1108,12 @@ export default class BspTileExtension extends Extension {
             // the NEXT insert into this same tree gets a real orientation
             // decision instead of bspTree.js's {width:1,height:1} fallback.
             this._layoutTree(tree, workspace, monitorIndex);
+        }
+
+        if (this._virtualWorkspaces) {
+            const monitorCount = global.backend.get_monitor_manager().get_monitors().length;
+            for (let m = 0; m < monitorCount; m++)
+                this._virtualWorkspaces.reconcileMonitor(m);
         }
     }
 }
