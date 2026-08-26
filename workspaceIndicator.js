@@ -38,12 +38,24 @@ class WorkspaceIndicator extends St.BoxLayout {
         this.destroy_all_children();
         for (let i = 0; i < count; i++) {
             const isActive = i === active;
-            const dot = new St.Widget({ y_align: Clutter.ActorAlign.CENTER });
+            const dot = new St.Widget({
+                y_align: Clutter.ActorAlign.CENTER,
+                reactive: true,
+                track_hover: true,
+            });
             dot.set_size(isActive ? PILL_WIDTH : DOT_SIZE, DOT_SIZE);
             dot.set_style(
                 `background-color: rgba(255, 255, 255, ${isActive ? 1 : 0.5}); ` +
                 `border-radius: ${DOT_SIZE / 2}px;`
             );
+            // switchTo() is a no-op when i is already the active slot, and
+            // fires onActiveChanged for every other index, which repaints
+            // this row (see IndicatorManager's onActiveChanged wiring) --
+            // no need to call update() ourselves here.
+            dot.connect('button-press-event', () => {
+                this._vws.switchTo(this._monitorIndex, i);
+                return Clutter.EVENT_STOP;
+            });
             this.add_child(dot);
         }
     }
