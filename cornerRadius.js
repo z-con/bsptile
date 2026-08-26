@@ -10,13 +10,16 @@ export const DEFAULT_CORNER_RADIUS = 12;
 // Hand-tuned overrides for apps where the alpha-based probe below measures
 // badly. Ghostty draws its background at less-than-full alpha (terminal
 // transparency) and sits behind blur-my-shell's own backdrop actor, both of
-// which corrupt the plateau/threshold logic in measureFromBytes -- probing
-// it landed on ~9px against a real on-screen radius of 24px (confirmed by
-// screenshotting the live border against the window and tuning until the
-// gap between them closed). Skip the probe for these and use the known-good
-// value instead.
+// which corrupt the plateau/threshold logic in measureFromBytes. 24px first
+// looked right (matched against blur-my-shell's own corner effect, also set
+// to 24), but side-by-side against the real window it was consistently too
+// large -- the window's own, less-rounded edge kept showing past the
+// border/blur curve. 18px (matching a matching drop in blur-my-shell's own
+// pipeline radius) was confirmed clean at multiple corners by screenshotting
+// the live border+blur against the window. Skip the probe for these and use
+// the known-good value instead.
 const KNOWN_RADII = {
-    'com.mitchellh.ghostty': 24,
+    'com.mitchellh.ghostty': 18,
 };
 
 const _measuredRadius = new Map(); // wm_class -> px
