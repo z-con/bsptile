@@ -146,7 +146,15 @@ export class VirtualWorkspaceManager {
     reconcileMonitor(monitorIndex) {
         const state = this._stateFor(monitorIndex);
         for (let i = state.count - 1; i >= 0; i--) {
-            if (this.maybeDiscardSlot(monitorIndex, i)) i++; // recheck this index -- a higher slot just shifted into it
+            // Discarding the topmost slot has nothing above it to shift
+            // down -- maybeDiscardSlot's own ensureTrailingSlot call can
+            // immediately manufacture a fresh empty slot back at this same
+            // index (when the new last slot is non-empty), and retrying
+            // would just discard-and-regrow that same index forever. Only
+            // retry when a lower, non-top index shifts a higher slot's
+            // (possibly non-empty) content down into it.
+            const wasTop = i === state.count - 1;
+            if (this.maybeDiscardSlot(monitorIndex, i) && !wasTop) i++; // recheck this index -- a higher slot just shifted into it
         }
         this.ensureTrailingSlot(monitorIndex);
     }
