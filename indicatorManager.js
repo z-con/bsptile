@@ -64,6 +64,7 @@ export class IndicatorManager {
         for (const indicator of this._indicators.values()) {
             if (indicator.get_parent() === Main.panel._leftBox)
                 Main.panel._leftBox.remove_child(indicator);
+            indicator.destroy();
         }
         this._indicators.clear();
 
