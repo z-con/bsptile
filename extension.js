@@ -12,6 +12,16 @@ import { GestureSwitcher } from './gestureSwitcher.js';
 import { MouseButtonSwitcher } from './mouseButtonSwitcher.js';
 import { IndicatorManager } from './indicatorManager.js';
 
+// Diagnostic logging for the monitor-hotplug/virtual-workspace machinery --
+// grep `journalctl --user -g bsptile-monitor` to follow a live plug/unplug.
+// Kept permanently (not gated on a debug setting): this class of bug is
+// intermittent and hardware-triggered, so a standing trail is worth far
+// more than the near-zero cost of a few log lines around a monitor
+// reconfigure, which is not a hot path.
+function debugLog(...args) {
+    log(`[bsptile-monitor] ${args.join(' ')}`);
+}
+
 const FOCUS_BORDER_WIDTH = 2;
 // Matches the default terminal (Ptyxis, "Ubuntu" palette, dark) exactly:
 // palette Background #300A24 at the profile's opacity=0.6.
@@ -363,9 +373,40 @@ export default class BspTileExtension extends Extension {
         conn(global.workspaceManager, 'active-workspace-changed', () => this._relayoutAll());
         conn(global.workspaceManager, 'workspace-removed', () => this._rebuildAllTrees());
         conn(Main.layoutManager, 'monitors-changed', () => {
-            this._rebuildAllTrees();
-            this._indicatorManager?.rebuild();
-            this._reassertNativeSwipeTrackerDisabled();
+            const monitors = global.backend.get_monitor_manager().get_monitors();
+            debugLog('monitors-changed fired;', monitors.length, 'monitor(s):',
+                monitors.map((m, i) => {
+                    try {
+                        return `${i}=${m.get_connector()}`;
+                    } catch (e) {
+                        return `${i}=<get_connector threw: ${e}>`;
+                    }
+                }).join(', '));
+
+            try {
+                this._rebuildAllTrees();
+                this._indicatorManager?.rebuild();
+                this._reassertNativeSwipeTrackerDisabled();
+            } catch (e) {
+                logError(e, '[bsptile-monitor] exception handling monitors-changed');
+            }
+
+            // Same race as _enableVirtualWorkspaces' identical idle_add
+            // above: Mutter's own work-area recalculation after a monitor
+            // reconfigure isn't necessarily done by the time this handler
+            // runs, so _rebuildAllTrees just above can lay windows out
+            // against a stale/transitional work area (visibly "squished"
+            // into a too-small rect) with nothing to correct it until some
+            // unrelated future relayout happens to. Defer one more pass to
+            // the next idle cycle, after Mutter's had a chance to settle.
+            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                try {
+                    this._relayoutAll();
+                } catch (e) {
+                    logError(e, '[bsptile-monitor] exception in deferred relayout after monitors-changed');
+                }
+                return GLib.SOURCE_REMOVE;
+            });
         });
         conn(this._settings, 'changed::inner-gaps', () => this._relayoutAll());
         conn(this._settings, 'changed::outer-gaps', () => this._relayoutAll());
@@ -1109,6 +1150,24 @@ export default class BspTileExtension extends Extension {
         // reachable by cycling, rather than being lost or scrambled.
         const reflowSlots = new Map(); // newMonitorIndex -> Map<"oldMonitor:oldVws", newVwsIndex>
 
+        // Confirmed live (2026-08-26): comparing old vs. new connector alone
+        // is NOT sufficient to detect a genuine disconnect. Plugging in a
+        // second monitor can shift the whole arrangement (Mutter places a
+        // freshly-connected display at a default position) so a window that
+        // never moved suddenly geometrically overlaps a DIFFERENT monitor's
+        // rect -- window.get_monitor() then reports a "new" connector for a
+        // monitor that's still very much connected, which the old check
+        // treated exactly like a real disconnect and parked the window into
+        // a fresh hidden slot for no reason. Only trust a connector change
+        // as a genuine relocation when the OLD connector has actually
+        // dropped out of the current monitor list.
+        const currentConnectors = new Set();
+        if (this._virtualWorkspaces) {
+            const monitorCount = global.backend.get_monitor_manager().get_monitors().length;
+            for (let m = 0; m < monitorCount; m++)
+                currentConnectors.add(this._virtualWorkspaces.connectorFor(m));
+        }
+
         for (const window of global.display.list_all_windows()) {
             if (!isTileable(window)) continue;
 
@@ -1131,7 +1190,31 @@ export default class BspTileExtension extends Extension {
                 // through to the current monitor's active slot below, same
                 // as any other untouched window.
                 const newConnector = this._virtualWorkspaces.connectorFor(monitorIndex);
-                if (old && old.monitorConnector !== null && old.monitorConnector !== newConnector) {
+                // connectorFor() falls back to a synthetic "index:N" identity
+                // when Meta.Monitor.get_connector() is unavailable/throws --
+                // that fallback is raw-index-based and therefore CAN legitimately
+                // differ across a reconfigure for a monitor that never actually
+                // moved (see connectorFor's own doc comment). Trusting it here
+                // would misfire as a spurious relocation and park windows that
+                // never left their monitor, so require a real connector string
+                // on both sides before treating this as a genuine relocation.
+                const bothRealConnectors = old && !String(old.monitorConnector).startsWith('index:')
+                    && !String(newConnector).startsWith('index:');
+                const oldMonitorStillConnected = old && currentConnectors.has(old.monitorConnector);
+                const looksRelocated = old && old.monitorConnector !== null && old.monitorConnector !== newConnector;
+                if (looksRelocated && !bothRealConnectors) {
+                    debugLog('IGNORING relocation signal for', window.get_title?.() ?? '<window>',
+                        '-- old connector', old.monitorConnector, 'new connector', newConnector,
+                        '(at least one is a synthetic index-based fallback, not trustworthy across a reconfigure)');
+                }
+                if (looksRelocated && bothRealConnectors && oldMonitorStillConnected) {
+                    debugLog('IGNORING relocation signal for', window.get_title?.() ?? '<window>',
+                        '-- old connector', old.monitorConnector, 'is still connected; get_monitor() just',
+                        'shifted due to an arrangement change, this is not a real relocation');
+                }
+                if (looksRelocated && bothRealConnectors && !oldMonitorStillConnected) {
+                    debugLog('relocating', window.get_title?.() ?? '<window>', 'from', old.monitorConnector,
+                        'slot', old.virtualWorkspaceIndex, 'to new monitor', newConnector, '(index', monitorIndex + ')');
                     let byOld = reflowSlots.get(monitorIndex);
                     if (!byOld) {
                         byOld = new Map();
@@ -1151,8 +1234,11 @@ export default class BspTileExtension extends Extension {
             tree.insert(window, null); // always spiral-fallback during a rebuild
             this._trackWindow(window, workspace, monitorIndex, vwsIndex);
 
-            if (this._virtualWorkspaces && vwsIndex !== this._activeVwsIndex(monitorIndex))
+            if (this._virtualWorkspaces && vwsIndex !== this._activeVwsIndex(monitorIndex)) {
+                debugLog('parking', window.get_title?.() ?? '<window>', 'on monitor', monitorIndex,
+                    '-- landed in slot', vwsIndex, 'but active slot is', this._activeVwsIndex(monitorIndex));
                 this._virtualWorkspaces.park(window);
+            }
 
             // Relayout immediately -- primes lastRect on the tree's leaves so
             // the NEXT insert into this same tree gets a real orientation

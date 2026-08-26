@@ -1,5 +1,13 @@
 import GLib from 'gi://GLib';
 
+// See the matching debugLog in extension.js -- same marker, same
+// journalctl grep, kept as a plain duplicate here rather than a shared
+// import to avoid coupling this module's public surface to extension.js
+// just for logging.
+function debugLog(...args) {
+    log(`[bsptile-monitor] ${args.join(' ')}`);
+}
+
 // Every monitor starts with exactly one empty slot -- see maybeDiscardSlot/
 // ensureTrailingSlot below for how the count grows and shrinks from there.
 const INITIAL_SLOT_COUNT = 1;
@@ -45,8 +53,11 @@ export class VirtualWorkspaceManager {
             const monitors = global.backend.get_monitor_manager().get_monitors();
             const m = monitors[monitorIndex];
             if (m && typeof m.get_connector === 'function') return m.get_connector();
+            debugLog('connectorFor(', monitorIndex, ') -- no usable Meta.Monitor at that index',
+                '(monitors.length=', monitors.length, ') -- falling back to synthetic identity');
         } catch (e) {
-            // fall through to the positional fallback below
+            debugLog('connectorFor(', monitorIndex, ') -- get_connector() threw:', String(e),
+                '-- falling back to synthetic identity');
         }
         return `index:${monitorIndex}`;
     }
@@ -145,6 +156,15 @@ export class VirtualWorkspaceManager {
     // one exists.
     reconcileMonitor(monitorIndex) {
         const state = this._stateFor(monitorIndex);
+        // Safety net, not expected to ever trigger: a prior version of this
+        // loop had a genuine infinite-loop bug (fixed in 42753ab) that froze
+        // GNOME Shell's main loop solid on every external-monitor unplug,
+        // requiring a hard reboot. Cap the retry count so ANY future
+        // regression here degrades to a logged bug instead of a repeat of
+        // that freeze -- silently leaving a monitor's slots unreconciled is
+        // a far better failure mode than hanging the compositor.
+        const RETRY_BUDGET = state.count + 50;
+        let retries = 0;
         for (let i = state.count - 1; i >= 0; i--) {
             // Discarding the topmost slot has nothing above it to shift
             // down -- maybeDiscardSlot's own ensureTrailingSlot call can
@@ -154,7 +174,15 @@ export class VirtualWorkspaceManager {
             // retry when a lower, non-top index shifts a higher slot's
             // (possibly non-empty) content down into it.
             const wasTop = i === state.count - 1;
-            if (this.maybeDiscardSlot(monitorIndex, i) && !wasTop) i++; // recheck this index -- a higher slot just shifted into it
+            if (this.maybeDiscardSlot(monitorIndex, i) && !wasTop) {
+                if (++retries > RETRY_BUDGET) {
+                    logError(new Error(`bsptile: reconcileMonitor(${monitorIndex}) exceeded its retry budget ` +
+                        `(${RETRY_BUDGET}) -- bailing out instead of hanging. This is a bug; slots may be ` +
+                        `left unreconciled.`));
+                    break;
+                }
+                i++; // recheck this index -- a higher slot just shifted into it
+            }
         }
         this.ensureTrailingSlot(monitorIndex);
     }
@@ -184,6 +212,8 @@ export class VirtualWorkspaceManager {
         const state = this._stateFor(monitorIndex);
         const oldIndex = state.activeIndex;
         if (newIndex === oldIndex) return;
+        debugLog('switchTo(monitor', monitorIndex, ', slot', oldIndex, '->', newIndex, ') called from:',
+            new Error().stack.split('\n').slice(1, 4).join(' | '));
 
         const focused = global.display.get_focus_window();
         if (focused && focused.get_monitor() === monitorIndex)
