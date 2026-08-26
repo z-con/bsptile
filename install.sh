@@ -6,7 +6,7 @@
 #   2. symlinks this repo into GNOME's extensions directory and enables it,
 #   3. applies the rest of the desktop setup that lives outside the
 #      extension proper -- plain GNOME/dconf preferences that were tweaked
-#      alongside it (terminal transparency, focus-follows-cursor, keybindings).
+#      alongside it (focus-follows-cursor, keybindings).
 #
 # Safe to re-run: every step sets a value or checks before acting, it
 # doesn't append/toggle, so running this twice leaves you in the same state.
@@ -96,15 +96,9 @@ gnome-extensions enable "$UUID" || {
     echo "    Log out and back in, then re-run this script."
 }
 
-if gsettings list-schemas | grep -q '^org.gnome.Ptyxis$'; then
-    echo "==> Ptyxis: transparency + no restored maximized state on new windows"
-    PTYXIS_PROFILE=$(gsettings get org.gnome.Ptyxis default-profile-uuid | tr -d "'")
-    gsettings set "org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/${PTYXIS_PROFILE}/" opacity 0.6
-    gsettings set org.gnome.Ptyxis restore-window-size false
-else
-    echo "==> Skipping Ptyxis settings (not installed -- this Ubuntu version likely"
-    echo "    ships a different default terminal)"
-fi
+echo "==> Terminal: Ghostty (config lives outside this repo, in the omakit"
+echo "    dotfiles bundle -- https://github.com/z-con/omakit -- not gsettings,"
+echo "    so nothing to apply here)."
 
 echo "==> Focus follows cursor"
 gsettings set org.gnome.desktop.wm.preferences focus-mode 'mouse'
@@ -137,7 +131,7 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings \
     "['${CKB_BASE}custom0/', '${CKB_BASE}custom1/', '${CKB_BASE}custom2/']"
 
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ name "Open Terminal"
-gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ command "ptyxis --new-window"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ command "ghostty"
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom0/ binding "<Super>Return"
 
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ name "Open Firefox window"
@@ -145,7 +139,7 @@ gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ command "firefox --new-window"
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom1/ binding "<Shift><Super>Return"
 
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ name "Open Terminal in Claude dir"
-gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ command "ptyxis --new-window -d $HOME/Claude -- claude"
+gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ command "ghostty --working-directory=$HOME/Claude -e claude"
 gsettings set $CKB_SCHEMA:${CKB_BASE}custom2/ binding "<Primary><Super>Return"
 
 echo "==> Done."

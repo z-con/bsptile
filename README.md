@@ -101,14 +101,16 @@ so running it twice leaves you in the same state. It will:
 3. Symlink this repo into `~/.local/share/gnome-shell/extensions/` and
    enable it.
 4. Apply the rest of the desktop tweaks that go with it but live outside
-   the extension itself: Ptyxis terminal transparency (skipped if you're
-   not on Ptyxis), focus-follows-cursor, `Super+W` to close the focused
-   window, `Super+Space` for the Activities Overview (GNOME's
+   the extension itself: focus-follows-cursor, `Super+W` to close the
+   focused window, `Super+Space` for the Activities Overview (GNOME's
    Spotlight-equivalent search), disabling GNOME's own built-in
    `Super+Left`/`Super+Right` half-screen tiling (it fights with bsptile),
-   and three terminal/app shortcuts: `Super+Return` opens a terminal,
-   `Shift+Super+Return` opens a new Firefox window, and
+   and three terminal/app shortcuts: `Super+Return` opens a terminal
+   (Ghostty), `Shift+Super+Return` opens a new Firefox window, and
    `Ctrl+Super+Return` opens a terminal running `claude` in `~/Claude`.
+   Terminal-emulator config itself (Ghostty's opacity/blur/palette) isn't
+   set here -- it lives in the [omakit](https://github.com/z-con/omakit)
+   dotfiles bundle alongside the rest of this machine's setup.
 
 **If the extension doesn't show as enabled after running the script**, it's
 almost always because GNOME Shell hadn't discovered the extensions
