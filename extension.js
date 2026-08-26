@@ -179,6 +179,14 @@ export default class BspTileExtension extends Extension {
                 });
             });
             this._globalSignals.push({ obj: Main.overview, id: overviewHiddenId });
+
+            // See _reassertActivitiesButtonHidden's own comment -- this is
+            // the lock/unlock (e.g. lid-close/resume) reset trigger, a
+            // separate signal from Main.overview's 'hidden' above.
+            const sessionModeUpdatedId = Main.sessionMode.connect('updated', () => {
+                this._reassertActivitiesButtonHidden();
+            });
+            this._globalSignals.push({ obj: Main.sessionMode, id: sessionModeUpdatedId });
         };
 
         if (Main.layoutManager._startingUp) {
@@ -323,6 +331,27 @@ export default class BspTileExtension extends Extension {
         const nativeSwipeTracker = Main.wm._workspaceAnimation?._swipeTracker;
         if (nativeSwipeTracker)
             nativeSwipeTracker.enabled = false;
+    }
+
+    // panel.js re-adds every configured panel button -- calling .show()
+    // on each unconditionally -- any time Main.sessionMode's 'updated'
+    // signal fires, via _updatePanel()/_updateBox()/_addToPanelBox().
+    // Confirmed live via a stack trace: unlocking the screen
+    // (screenShield.deactivate() -> sessionMode.popMode() -> _sync() ->
+    // emits 'updated') re-shows the Activities button we hid in
+    // _enableVirtualWorkspaces(), independently of both the Overview-close
+    // and monitors-changed reset triggers already handled elsewhere --
+    // e.g. a lid-close/resume cycle that locks and unlocks the session.
+    // Unlike the panel-style/Overview race, panel.js's own 'updated'
+    // handler is registered at shell startup, long before this extension's
+    // -- so reasserting synchronously from our own 'updated' handler runs
+    // after it in the same dispatch and reliably wins the race, no
+    // idle_add defer needed (confirmed live). A no-op while vws is off.
+    _reassertActivitiesButtonHidden() {
+        if (!this._virtualWorkspaces) return;
+        const activitiesButton = Main.panel.statusArea['activities'];
+        if (activitiesButton)
+            activitiesButton.container.hide();
     }
 
     _disableVirtualWorkspaces() {
@@ -1209,6 +1238,13 @@ export default class BspTileExtension extends Extension {
     }
 
     _relayoutAll() {
+        // Can race disable() when called from a deferred GLib.idle_add (e.g.
+        // the post-monitors-changed settle pass) -- confirmed live 2026-08-26
+        // via a logged "this._trees is null" TypeError when the screen
+        // locked (session-mode switch to unlock-dialog, back when this
+        // extension still lacked "unlock-dialog" in metadata.json's
+        // session-modes and so got disabled on every lock) mid-flight.
+        if (!this._trees) return;
         for (const [workspace, byMonitor] of this._trees) {
             for (const [monitorIndex, byVws] of byMonitor) {
                 for (const tree of byVws.values())

@@ -5,5 +5,6 @@
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "",
   "settings-schema": "org.gnome.shell.extensions.bsptile",
+  "session-modes": ["user", "unlock-dialog"],
   "version": 1
 }
