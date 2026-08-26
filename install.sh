@@ -96,8 +96,8 @@ gnome-extensions enable "$UUID" || {
     echo "    Log out and back in, then re-run this script."
 }
 
-echo "==> Terminal: Ghostty (config lives outside this repo, in the omakit"
-echo "    dotfiles bundle -- https://github.com/z-con/omakit -- not gsettings,"
+echo "==> Terminal: Ghostty (config lives outside this repo, in the ubuntstrap"
+echo "    dotfiles bundle -- https://github.com/z-con/ubuntstrap -- not gsettings,"
 echo "    so nothing to apply here)."
 
 echo "==> Focus follows cursor"

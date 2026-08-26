@@ -109,7 +109,7 @@ so running it twice leaves you in the same state. It will:
    (Ghostty), `Shift+Super+Return` opens a new Firefox window, and
    `Ctrl+Super+Return` opens a terminal running `claude` in `~/Claude`.
    Terminal-emulator config itself (Ghostty's opacity/blur/palette) isn't
-   set here -- it lives in the [omakit](https://github.com/z-con/omakit)
+   set here -- it lives in the [ubuntstrap](https://github.com/z-con/ubuntstrap)
    dotfiles bundle alongside the rest of this machine's setup.
 
 **If the extension doesn't show as enabled after running the script**, it's
