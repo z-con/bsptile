@@ -906,8 +906,10 @@ export default class BspTileExtension extends Extension {
 
         const monitorIndex = state.monitorIndex;
         const count = this._virtualWorkspaces.countFor(monitorIndex);
-        let targetIndex = ((state.virtualWorkspaceIndex + direction) % count + count) % count;
-        if (targetIndex === state.virtualWorkspaceIndex) return;
+        // No wraparound (matches switchNext/switchPrev) -- moving a window
+        // past the first/last slot is just a no-op instead of cycling.
+        let targetIndex = state.virtualWorkspaceIndex + direction;
+        if (targetIndex < 0 || targetIndex >= count) return;
 
         const oldIndex = state.virtualWorkspaceIndex;
         const oldTree = this._treeFor(state.workspace, monitorIndex, oldIndex, false);

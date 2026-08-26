@@ -151,14 +151,19 @@ export class VirtualWorkspaceManager {
         this.ensureTrailingSlot(monitorIndex);
     }
 
+    // No wraparound, by design -- the last slot is already always an empty
+    // reserve (ensureTrailingSlot), so "next" past it would just be
+    // wrapping to slot 0 for no reason.
     switchNext(monitorIndex) {
         const state = this._stateFor(monitorIndex);
-        this.switchTo(monitorIndex, (state.activeIndex + 1) % state.count);
+        if (state.activeIndex + 1 >= state.count) return;
+        this.switchTo(monitorIndex, state.activeIndex + 1);
     }
 
     switchPrev(monitorIndex) {
         const state = this._stateFor(monitorIndex);
-        this.switchTo(monitorIndex, (state.activeIndex - 1 + state.count) % state.count);
+        if (state.activeIndex === 0) return;
+        this.switchTo(monitorIndex, state.activeIndex - 1);
     }
 
     // Makes `newIndex` the active slot on `monitorIndex`: parks every window
