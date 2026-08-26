@@ -142,7 +142,7 @@ gnome-extensions disable bsptile@zach.local
 rm ~/.local/share/gnome-shell/extensions/bsptile@zach.local   # just the symlink
 ```
 
-The gsettings tweaks `install.sh` applied (Ptyxis, focus-mode, keybindings)
+The gsettings tweaks `install.sh` applied (focus-mode, keybindings)
 aren't reverted automatically -- they're plain GNOME preferences independent
 of the extension, so undo them the same way you'd change any other setting.
 
