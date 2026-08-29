@@ -65,6 +65,16 @@ ES module) extension API, rather than a port of an older tiling extension.
     9/"forward") do the same, captured stage-wide -- this takes those
     buttons away from per-app back/forward navigation (e.g. a browser)
     while the feature is on.
+  - **`Super+1`...`9`,`0`** -- jump the focused monitor to virtual
+    workspace slot 1-10 (`0` is slot 10), if it exists yet; a no-op
+    otherwise. **`Super+Shift+1`...`9`,`0`** -- move the focused tiled
+    window to that slot on its own monitor, or to the next available slot
+    if it doesn't exist yet. These also take over two other things that
+    would otherwise fight over the same `Super+1`-`9` keys while the
+    feature is on (both restored on disable): GNOME's native "switch to
+    application" dash shortcuts, and, if Ubuntu Dock/dash-to-dock is
+    installed, its own independent "activate Nth pinned app" hotkeys
+    (toggled off via its `hot-keys` setting).
   - A small dot row (`● ● ○ ○`) shows each monitor's own active slot: in
     the real top panel on the primary monitor, and as a small corner
     overlay on every other monitor (no full secondary panel exists yet).

@@ -41,6 +41,35 @@ const NATIVE_WORKSPACE_KEYBINDING_KEYS = [
     'move-to-workspace-up', 'move-to-workspace-down',
 ];
 
+// GNOME's own org.gnome.shell.keybindings schema binds Super+1..9 to
+// switch-to-application-N (jump to the Nth favorite/running app in the
+// dash) by default -- the same accelerators our numbered virtual-workspace
+// keybindings below use, so these need the same save-clear-restore
+// takeover treatment as NATIVE_WORKSPACE_KEYBINDING_KEYS, just in a
+// different schema. No native switch-to-application-10 exists (Super+0 is
+// unbound by default), and Super+Shift+N isn't bound to anything native.
+const NATIVE_APP_SWITCH_KEYBINDING_KEYS =
+    Array.from({ length: 9 }, (_, i) => `switch-to-application-${i + 1}`);
+
+// Ubuntu Dock (and upstream dash-to-dock, same schema id) binds its own
+// Super+1..9,0 / Super+Shift+1..9,0 / Ctrl+Super+1..9,0 "activate Nth
+// pinned app" hotkeys directly via Main.wm.addKeybinding -- entirely
+// outside both org.gnome.desktop.wm.keybindings and
+// org.gnome.shell.keybindings, so it's a third, independent source of
+// conflicting Super+N accelerators (confirmed live: Super+1 was opening
+// dash-to-dock's expose-style multi-window scale view instead of
+// switching virtual workspace slots). It gates all of those keybindings
+// behind this single boolean (see docking.js's KeyboardShortcuts class),
+// so toggling it is simpler and more robust than clearing 30 individual
+// accelerator arrays.
+const DASH_TO_DOCK_SCHEMA_ID = 'org.gnome.shell.extensions.dash-to-dock';
+
+// Slot indices (0-based) for the 10 numbered virtual-workspace keybindings,
+// keyed by the gsettings suffix -- digit key "1" is slot 0 ... "9" is slot
+// 8, and "0" is slot 9, matching the usual desktop convention of the 0 key
+// mapping to the 10th workspace.
+const NUMBERED_VWS_SLOTS = Array.from({ length: 10 }, (_, i) => i);
+
 function resizeSidesFromGrabOp(grabOp) {
     let horizontal = null;
     let vertical = null;
@@ -102,6 +131,10 @@ export default class BspTileExtension extends Extension {
         this._indicatorManager = null;
         this._wmKeybindingsSettings = null;
         this._savedNativeKeybindings = null;
+        this._shellKeybindingsSettings = null;
+        this._savedNativeAppSwitchKeybindings = null;
+        this._dashToDockSettings = null;
+        this._savedDashToDockHotKeys = undefined;
         this._nativeSwipeTrackerWasEnabled = undefined;
         this._activitiesButtonWasVisible = undefined;
 
@@ -236,6 +269,8 @@ export default class BspTileExtension extends Extension {
 
         this._settings = null;
         this._wmKeybindingsSettings = null;
+        this._shellKeybindingsSettings = null;
+        this._dashToDockSettings = null;
         this._grabbedWindow = null;
         this._grabInProgressWindow = null;
     }
@@ -265,6 +300,13 @@ export default class BspTileExtension extends Extension {
         Main.wm.addKeybinding('move-window-to-virtual-workspace-prev', this._settings, Meta.KeyBindingFlags.NONE,
             Shell.ActionMode.NORMAL, () => this._moveFocusedWindowToVirtualWorkspace(-1));
 
+        for (const slot of NUMBERED_VWS_SLOTS) {
+            Main.wm.addKeybinding(`switch-to-virtual-workspace-${slot + 1}`, this._settings, Meta.KeyBindingFlags.NONE,
+                Shell.ActionMode.NORMAL, () => this._switchVirtualWorkspaceToIndex(slot));
+            Main.wm.addKeybinding(`move-window-to-virtual-workspace-${slot + 1}`, this._settings, Meta.KeyBindingFlags.NONE,
+                Shell.ActionMode.NORMAL, () => this._moveFocusedWindowToVirtualWorkspaceIndex(slot));
+        }
+
         // Take over the native accelerators for the same actions, so the
         // keys the user already knows drive our per-monitor simulation
         // instead of real (all-monitor) GNOME workspace switching. Saved
@@ -276,6 +318,29 @@ export default class BspTileExtension extends Extension {
         for (const key of NATIVE_WORKSPACE_KEYBINDING_KEYS) {
             this._savedNativeKeybindings[key] = this._wmKeybindingsSettings.get_strv(key);
             this._wmKeybindingsSettings.set_strv(key, []);
+        }
+
+        // Same takeover for Super+1..9's native switch-to-application-N
+        // binding (org.gnome.shell.keybindings) -- see
+        // NATIVE_APP_SWITCH_KEYBINDING_KEYS above for why this is a
+        // separate schema from the wm-keybindings takeover just above.
+        if (!this._shellKeybindingsSettings)
+            this._shellKeybindingsSettings = new Gio.Settings({ schema_id: 'org.gnome.shell.keybindings' });
+        this._savedNativeAppSwitchKeybindings = {};
+        for (const key of NATIVE_APP_SWITCH_KEYBINDING_KEYS) {
+            this._savedNativeAppSwitchKeybindings[key] = this._shellKeybindingsSettings.get_strv(key);
+            this._shellKeybindingsSettings.set_strv(key, []);
+        }
+
+        // Same takeover for Ubuntu Dock/dash-to-dock's independent
+        // Super+N hotkeys -- see DASH_TO_DOCK_SCHEMA_ID above. Guarded
+        // since that extension might not be installed at all.
+        if (!this._dashToDockSettings && Gio.SettingsSchemaSource.get_default().lookup(DASH_TO_DOCK_SCHEMA_ID, true))
+            this._dashToDockSettings = new Gio.Settings({ schema_id: DASH_TO_DOCK_SCHEMA_ID });
+        if (this._dashToDockSettings) {
+            this._savedDashToDockHotKeys = this._dashToDockSettings.get_boolean('hot-keys');
+            if (this._savedDashToDockHotKeys)
+                this._dashToDockSettings.set_boolean('hot-keys', false);
         }
 
         // Same idea for the native touchpad swipe-to-switch-workspace
@@ -382,10 +447,24 @@ export default class BspTileExtension extends Extension {
             this._savedNativeKeybindings = null;
         }
 
+        if (this._savedNativeAppSwitchKeybindings) {
+            for (const key of NATIVE_APP_SWITCH_KEYBINDING_KEYS)
+                this._shellKeybindingsSettings.set_strv(key, this._savedNativeAppSwitchKeybindings[key]);
+            this._savedNativeAppSwitchKeybindings = null;
+        }
+
+        if (this._dashToDockSettings && this._savedDashToDockHotKeys)
+            this._dashToDockSettings.set_boolean('hot-keys', true);
+        this._savedDashToDockHotKeys = undefined;
+
         Main.wm.removeKeybinding('virtual-workspace-next');
         Main.wm.removeKeybinding('virtual-workspace-prev');
         Main.wm.removeKeybinding('move-window-to-virtual-workspace-next');
         Main.wm.removeKeybinding('move-window-to-virtual-workspace-prev');
+        for (const slot of NUMBERED_VWS_SLOTS) {
+            Main.wm.removeKeybinding(`switch-to-virtual-workspace-${slot + 1}`);
+            Main.wm.removeKeybinding(`move-window-to-virtual-workspace-${slot + 1}`);
+        }
 
         this._virtualWorkspaces.destroy();
         this._virtualWorkspaces = null;
@@ -1088,6 +1167,17 @@ export default class BspTileExtension extends Extension {
         else this._virtualWorkspaces.switchPrev(monitorIndex);
     }
 
+    // Super+1..0: jump straight to a specific slot on the focused monitor,
+    // if it exists yet -- unlike switchNext/switchPrev this never grows
+    // capacity, since "go to workspace 5" on a monitor that only has 3 slots
+    // has nothing sensible to jump to.
+    _switchVirtualWorkspaceToIndex(requestedIndex) {
+        if (!this._virtualWorkspaces) return;
+        const monitorIndex = this._resolveMonitorForKeybinding();
+        if (requestedIndex >= this._virtualWorkspaces.countFor(monitorIndex)) return;
+        this._virtualWorkspaces.switchTo(monitorIndex, requestedIndex);
+    }
+
     _moveFocusedWindowToVirtualWorkspace(direction) {
         if (!this._virtualWorkspaces) return;
         const win = global.display.get_focus_window();
@@ -1095,14 +1185,42 @@ export default class BspTileExtension extends Extension {
         const state = this._windowState.get(win);
         if (!state) return; // not tiled
 
-        const monitorIndex = state.monitorIndex;
-        const count = this._virtualWorkspaces.countFor(monitorIndex);
+        const count = this._virtualWorkspaces.countFor(state.monitorIndex);
         // No wraparound (matches switchNext/switchPrev) -- moving a window
         // past the first/last slot is just a no-op instead of cycling.
-        let targetIndex = state.virtualWorkspaceIndex + direction;
+        const targetIndex = state.virtualWorkspaceIndex + direction;
         if (targetIndex < 0 || targetIndex >= count) return;
 
+        this._moveWindowToVwsSlot(win, state, targetIndex);
+    }
+
+    // Super+Shift+1..0: move the focused window straight to a specific slot
+    // on its own monitor. If that slot doesn't exist yet, land on the
+    // trailing empty slot instead (the "next available workspace" -- it's
+    // always present per VirtualWorkspaceManager's slot invariant, so no
+    // growCapacity is needed here).
+    _moveFocusedWindowToVirtualWorkspaceIndex(requestedIndex) {
+        if (!this._virtualWorkspaces) return;
+        const win = global.display.get_focus_window();
+        if (!win) return;
+        const state = this._windowState.get(win);
+        if (!state) return; // not tiled
+
+        const count = this._virtualWorkspaces.countFor(state.monitorIndex);
+        const targetIndex = requestedIndex < count ? requestedIndex : count - 1;
+
+        this._moveWindowToVwsSlot(win, state, targetIndex);
+    }
+
+    // Shared core of the two methods above: moves an already-tracked tiled
+    // window from its current vws slot to `targetIndex` on the same
+    // monitor, updating trees/bookkeeping and parking it if it landed
+    // somewhere other than the monitor's active slot.
+    _moveWindowToVwsSlot(win, state, targetIndex) {
+        const monitorIndex = state.monitorIndex;
         const oldIndex = state.virtualWorkspaceIndex;
+        if (targetIndex === oldIndex) return;
+
         const oldTree = this._treeFor(state.workspace, monitorIndex, oldIndex, false);
         if (oldTree) {
             oldTree.remove(win);
