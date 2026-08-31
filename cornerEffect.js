@@ -94,7 +94,7 @@ export const RoundedCornersEffect = GObject.registerClass({
     set radius(v) {
         if (v === this._radius) return;
         this._radius = v;
-        this.set_uniform_value('radius', parseFloat(v));
+        this._setFloatUniform('radius', v);
         this.queue_repaint();
     }
 
@@ -109,8 +109,30 @@ export const RoundedCornersEffect = GObject.registerClass({
         // uniform write, unlike `radius`/on construction, or the actor
         // keeps showing the last-painted frame until something unrelated
         // forces a repaint.
-        this.set_uniform_value('straight', v ? 1.0 : 0.0);
+        this._setFloatUniform('straight', v ? 1.0 : 0.0);
         this.queue_repaint();
+    }
+
+    // Clutter.ShaderEffect.set_uniform_value's real GI signature takes a
+    // GObject.Value, not a bare number -- confirmed via introspection
+    // (PyGObject's help() on this machine's GJS/Clutter build, gjs 1.88.0)
+    // after finding live that every set_uniform_value('name', plainJsFloat)
+    // call in this file was a silent no-op: the uniform stayed at whatever
+    // the shader compiler zero-initializes it to, no matter how many times
+    // it was called, synchronously or deferred via GLib.idle_add, with no
+    // JS exception or journalctl warning anywhere. There's no GJS override
+    // on this version that auto-boxes a plain number into a GValue for this
+    // call the way there is for many other GI setters. This silently broke
+    // EVERY uniform this effect sets (radius/straight/width/height/clip*),
+    // which in turn made the coverage shader treat every fragment as
+    // outside the (zero-sized) clip rect -- i.e. every window's content
+    // fully transparent. Wrapping the value in a real GObject.Value fixes
+    // it (verified live via screenshot before writing this fix).
+    _setFloatUniform(name, value) {
+        const v = new GObject.Value();
+        v.init(GObject.TYPE_FLOAT);
+        v.set_float(parseFloat(value));
+        this.set_uniform_value(name, v);
     }
 
     vfunc_set_actor(actor) {
@@ -129,10 +151,10 @@ export const RoundedCornersEffect = GObject.registerClass({
     _syncUniforms() {
         const actor = this.get_actor();
         if (!actor) return;
-        this.set_uniform_value('width', parseFloat(actor.width));
-        this.set_uniform_value('height', parseFloat(actor.height));
-        this.set_uniform_value('radius', parseFloat(this.radius));
-        this.set_uniform_value('straight', this.straight ? 1.0 : 0.0);
+        this._setFloatUniform('width', actor.width);
+        this._setFloatUniform('height', actor.height);
+        this._setFloatUniform('radius', this.radius);
+        this._setFloatUniform('straight', this.straight ? 1.0 : 0.0);
 
         // A window actor's buffer is padded on every side well past the
         // window's real visible frame -- confirmed live on Ghostty: a
@@ -152,18 +174,18 @@ export const RoundedCornersEffect = GObject.registerClass({
         if (this._window) {
             const frame = this._window.get_frame_rect();
             const buffer = this._window.get_buffer_rect();
-            this.set_uniform_value('clipX', parseFloat(frame.x - buffer.x));
-            this.set_uniform_value('clipY', parseFloat(frame.y - buffer.y));
-            this.set_uniform_value('clipW', parseFloat(frame.width));
-            this.set_uniform_value('clipH', parseFloat(frame.height));
+            this._setFloatUniform('clipX', frame.x - buffer.x);
+            this._setFloatUniform('clipY', frame.y - buffer.y);
+            this._setFloatUniform('clipW', frame.width);
+            this._setFloatUniform('clipH', frame.height);
         } else {
             // No window reference (shouldn't normally happen) -- fall back
             // to clipping against the full actor bounds rather than not
             // clipping at all.
-            this.set_uniform_value('clipX', 0);
-            this.set_uniform_value('clipY', 0);
-            this.set_uniform_value('clipW', parseFloat(actor.width));
-            this.set_uniform_value('clipH', parseFloat(actor.height));
+            this._setFloatUniform('clipX', 0);
+            this._setFloatUniform('clipY', 0);
+            this._setFloatUniform('clipW', actor.width);
+            this._setFloatUniform('clipH', actor.height);
         }
         this.queue_repaint();
     }
