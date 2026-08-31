@@ -6,7 +6,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import { BspTree } from './bspTree.js';
 import { FocusBorder } from './windowBorder.js';
-import { getCornerRadius, probeCornerRadius } from './cornerRadius.js';
+import { RoundedCornersEffect, WINDOW_CORNER_RADIUS } from './cornerEffect.js';
 import { VirtualWorkspaceManager } from './virtualWorkspace.js';
 import { GestureSwitcher } from './gestureSwitcher.js';
 import { MouseButtonSwitcher } from './mouseButtonSwitcher.js';
@@ -179,6 +179,19 @@ export default class BspTileExtension extends Extension {
 
             if (this._settings.get_boolean('per-monitor-workspaces-enabled'))
                 this._enableVirtualWorkspaces();
+
+            // Windows that already existed before this enable() (i.e. every
+            // normal window, on a real login/reboot) only get rounded via
+            // _onWindowCreated's first-frame hook for ones created AFTER
+            // this point -- sweep everything already open once here too, on
+            // the same cheap isTileableBase filter _onWindowCreated itself
+            // uses (deliberately not the stricter isTileable -- corners
+            // should round on every normal window, not just ones bsptile
+            // ends up tiling).
+            for (const window of global.display.list_all_windows()) {
+                if (isTileableBase(window))
+                    this._applyRoundedCorners(window);
+            }
 
             this._connectGlobalSignals();
             this._rebuildAllTrees();
@@ -563,6 +576,8 @@ export default class BspTileExtension extends Extension {
             // re-check: app may have become a dialog/minimized by now
             if (!isTileableBase(window)) return;
 
+            this._applyRoundedCorners(window);
+
             // Confirmed live 2026-08-26: window.get_monitor() can still
             // report the WRONG monitor right at 'first-frame' for a window
             // that opened on a just-plugged-in external display -- Mutter
@@ -594,6 +609,43 @@ export default class BspTileExtension extends Extension {
                 this._insertWindow(window);
                 return GLib.SOURCE_REMOVE;
             });
+        });
+    }
+
+    // Forces every normal window's actual rendered corners to
+    // WINDOW_CORNER_RADIUS via a shader clip (cornerEffect.js), regardless
+    // of whatever corner radius (or lack of one) the app draws natively.
+    // This is what lets windowBorder.js's ring always be drawn at that same
+    // constant with no gap or mismatch: both come from one shared number
+    // instead of the ring trying to match whatever each app happens to
+    // render, which is what the old per-app alpha-probe approach
+    // (previously in cornerRadius.js, now deleted) spent several sessions
+    // fighting -- soft drop-shadow halos, probes catching an open
+    // animation mid-flight, etc. -- and never fully won.
+    _applyRoundedCorners(window) {
+        const actor = window.get_compositor_private();
+        if (!actor || actor.get_effect('bsptile-round-corners')) return;
+
+        const effect = new RoundedCornersEffect({ radius: WINDOW_CORNER_RADIUS, window });
+        actor.add_effect_with_name('bsptile-round-corners', effect);
+
+        // Flush against the screen edge, a maximized/fullscreen window
+        // should have square corners like every other tiled window's outer
+        // edge -- rounded corners floating in the middle of a monitor edge
+        // look like a bug, not a feature.
+        const updateStraight = () => {
+            effect.straight = window.is_fullscreen() ||
+                window.maximizedHorizontally || window.maximizedVertically;
+        };
+        updateStraight();
+
+        const ids = [
+            window.connect('notify::maximized-horizontally', updateStraight),
+            window.connect('notify::maximized-vertically', updateStraight),
+            window.connect('notify::fullscreen', updateStraight),
+        ];
+        window.connect('unmanaging', () => {
+            for (const id of ids) window.disconnect(id);
         });
     }
 
@@ -1256,13 +1308,7 @@ export default class BspTileExtension extends Extension {
             return;
         }
 
-        this._focusBorder.setCornerRadius(getCornerRadius(win.get_wm_class()));
-        probeCornerRadius(win, radius => {
-            if (!this._focusBorder || global.display.get_focus_window() !== win)
-                return;
-            this._focusBorder.setCornerRadius(radius);
-            this._focusBorder.followRect(win.get_frame_rect());
-        });
+        this._focusBorder.setCornerRadius(WINDOW_CORNER_RADIUS);
 
         const update = () => {
             const isMaximized = win.maximizedHorizontally && win.maximizedVertically;
