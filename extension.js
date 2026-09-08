@@ -492,6 +492,14 @@ export default class BspTileExtension extends Extension {
         conn(global.display, 'grab-op-begin', (_d, window, grabOp) => this._onGrabBegin(window, grabOp));
         conn(global.display, 'grab-op-end', (_d, window) => this._onGrabEnd(window));
         conn(global.display, 'notify::focus-window', () => this._onFocusChanged());
+        // A plain child of windowGroup keeps whatever stacking position it
+        // had when added -- Mutter's restack sync only reorders actual
+        // MetaWindowActors, so the border was staying wherever it landed at
+        // enable() and painting over every menu/popup/untiled window raised
+        // afterward. Re-pin it just above the focused window's own actor on
+        // every restack so it can never outrank a window genuinely stacked
+        // above the focused one (a context menu, an always-on-top floater).
+        conn(global.display, 'restacked', () => this._restackFocusBorder());
         conn(global.workspaceManager, 'active-workspace-changed', () => this._relayoutAll());
         conn(global.workspaceManager, 'workspace-removed', () => this._rebuildAllTrees());
         conn(Main.layoutManager, 'monitors-changed', () => {
@@ -623,6 +631,16 @@ export default class BspTileExtension extends Extension {
     // fighting -- soft drop-shadow halos, probes catching an open
     // animation mid-flight, etc. -- and never fully won.
     _applyRoundedCorners(window) {
+        // Disabled: the shader's clip-boundary math has a reproducible bug
+        // (confirmed live, root cause not fully pinned down despite extensive
+        // testing) that clips window content ~10-14px short of the real edge
+        // on some windows, letting raw unblurred wallpaper show through in a
+        // visible band near the edge. Until that's understood and fixed,
+        // leave windows with their native corners (square for Ghostty/X11
+        // apps, natively-rounded for GTK4/CSD apps) rather than ship a
+        // visible rendering bug for a cosmetic radius match.
+        return;
+        // eslint-disable-next-line no-unreachable
         const actor = window.get_compositor_private();
         if (!actor || actor.get_effect('bsptile-round-corners')) return;
 
@@ -1318,6 +1336,7 @@ export default class BspTileExtension extends Extension {
             }
             this._focusBorder.followRect(win.get_frame_rect());
             this._focusBorder.show();
+            this._restackFocusBorder();
         };
 
         this._focusedWindowSignals = [
@@ -1327,6 +1346,17 @@ export default class BspTileExtension extends Extension {
         ];
 
         update();
+    }
+
+    // Keeps the border exactly one step above the focused window's own
+    // actor in windowGroup, rather than wherever it happened to land when
+    // added -- see the 'restacked' connection in _connectGlobalSignals.
+    _restackFocusBorder() {
+        if (!this._focusBorder.visible) return;
+        const win = global.display.get_focus_window();
+        const actor = win?.get_compositor_private();
+        if (!actor || actor.get_parent() !== global.windowGroup) return;
+        global.windowGroup.set_child_above_sibling(this._focusBorder, actor);
     }
 
     _treeFor(workspace, monitorIndex, vwsIndex, create) {
@@ -1359,11 +1389,20 @@ export default class BspTileExtension extends Extension {
         const inner = this._settings.get_uint('inner-gaps');
         const wa = workspace.get_work_area_for_monitor(monitorIndex);
 
+        // Every window is later inset by half of `inner` on all four sides
+        // (see the width/height math below), including the sides that land
+        // against this root rect's own edge. Left uncompensated, that adds
+        // an extra half-gap on top of `outer`, so the actual edge-to-window
+        // gap ends up bigger than the edge-to-edge gap between two tiles.
+        // Backing off the root inset by that same half-gap here cancels it
+        // out, so `outer-gaps` == `inner-gaps` produces visually equal gaps.
+        const outerInset = Math.max(0, outer - inner / 2);
+
         const rect = {
-            x: wa.x + outer,
-            y: wa.y + outer,
-            width: wa.width - 2 * outer,
-            height: wa.height - 2 * outer,
+            x: wa.x + outerInset,
+            y: wa.y + outerInset,
+            width: wa.width - 2 * outerInset,
+            height: wa.height - 2 * outerInset,
         };
         if (rect.width <= 0 || rect.height <= 0) return;
 
