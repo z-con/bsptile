@@ -59,12 +59,12 @@ export class GestureSwitcher {
 
     _onEnd(tracker, duration, endProgress) {
         // Confirmed backwards live: a swipe landing at progress +1 is the
-        // "previous" direction, not "next", by this SwipeTracker's sign
-        // convention -- so the mapping is inverted from what the
-        // (distance, points, ...) naming would suggest.
+        // "next" direction, not "previous", by this SwipeTracker's sign
+        // convention -- matches the (distance, points, ...) naming
+        // directly.
         const snapped = Math.round(endProgress);
-        if (snapped === 1) this._vws.switchPrev(this._monitorIndex);
-        else if (snapped === -1) this._vws.switchNext(this._monitorIndex);
+        if (snapped === 1) this._vws.switchNext(this._monitorIndex);
+        else if (snapped === -1) this._vws.switchPrev(this._monitorIndex);
         // snapped === 0: cancelled/returned to start -- nothing to do.
     }
 
