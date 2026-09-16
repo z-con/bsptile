@@ -22,7 +22,7 @@ function debugLog(...args) {
     log(`[bsptile-monitor] ${args.join(' ')}`);
 }
 
-const FOCUS_BORDER_WIDTH = 2;
+const FOCUS_BORDER_WIDTH = 4;
 // Matches the default terminal (Ptyxis, "Ubuntu" palette, dark) exactly:
 // palette Background #300A24 at the profile's opacity=0.6.
 const PANEL_BACKGROUND_STYLE = 'background-color: rgba(48,10,36,0.6);';
